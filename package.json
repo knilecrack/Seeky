@@ -1,0 +1,72 @@
+{
+  "name": "seeky",
+  "displayName": "Seeky",
+  "description": "Telescope-inspired modal search using ripgrep/fff — live grep and file finder with preview",
+  "version": "0.0.1",
+  "publisher": "knilecrack",
+  "engines": {
+    "vscode": "^1.120.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "ripgrep",
+    "search",
+    "telescope",
+    "modal",
+    "grep"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "seeky.liveGrep",
+        "title": "Live Grep (ripgrep)",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.findFiles",
+        "title": "Find Files (ripgrep)",
+        "category": "Seeky"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "seeky.liveGrep",
+        "key": "ctrl+shift+g",
+        "mac": "cmd+shift+g",
+        "when": "!terminalFocus"
+      },
+      {
+        "command": "seeky.findFiles",
+        "key": "ctrl+shift+alt+p",
+        "mac": "cmd+shift+alt+p",
+        "when": "!terminalFocus"
+      }
+    ],
+    "configuration": {
+      "title": "Seeky Configuration",
+      "properties": {
+        "seeky.maxResults": {
+          "type": "number",
+          "default": 200,
+          "description": "Maximum number of search results to display."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "compile": "tsc -p ./ --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.41",
+    "@types/vscode": "^1.95.0",
+    "esbuild": "^0.20.2",
+    "typescript": "^6.0.3"
+  }
+}
