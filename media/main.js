@@ -12,23 +12,33 @@
     const previewHeader = /** @type {HTMLElement} */ (document.getElementById('preview-header'));
     const previewContent = /** @type {HTMLElement} */ (document.getElementById('preview-content'));
     const btnGrep = /** @type {HTMLButtonElement} */ (document.getElementById('btn-grep'));
+    const btnRegex = /** @type {HTMLButtonElement} */ (document.getElementById('btn-regex'));
     const btnFiles = /** @type {HTMLButtonElement} */ (document.getElementById('btn-files'));
     const modeIcon = /** @type {HTMLElement} */ (document.getElementById('mode-icon'));
     const resultCount = /** @type {HTMLElement} */ (document.getElementById('result-count'));
 
     // ── State ─────────────────────────────────────────────────────────────────
     let currentMode = app.dataset.mode || 'grep';
+    /** @type {'plain' | 'regex'} */
+    let grepMode = 'plain';
     let selectedIndex = -1;
     /** @type {Array<Object>} */
     let results = [];
     let searchTimeout = 0;
 
-    // ── Initial focus ─────────────────────────────────────────────────────────
+    // ── Initial focus + pre-fill ──────────────────────────────────────────────
     searchInput.focus();
+    const initialQuery = app.dataset.initialQuery || '';
+    if (initialQuery) {
+        searchInput.value = initialQuery;
+        triggerSearch();
+    }
+    syncRegexButton();
 
     // ── Mode toggle ───────────────────────────────────────────────────────────
     btnGrep.addEventListener('click', () => setMode('grep'));
     btnFiles.addEventListener('click', () => setMode('files'));
+    btnRegex.addEventListener('click', () => toggleRegex());
 
     function setMode(/** @type {string} */ mode) {
         currentMode = mode;
@@ -36,7 +46,20 @@
         btnFiles.className = btnFiles.className.replace(/btn-(active|inactive)/g, '') + (mode === 'files' ? ' btn-active' : ' btn-inactive');
         modeIcon.textContent = mode === 'grep' ? '🔍' : '📁';
         searchInput.placeholder = mode === 'grep' ? 'Live grep…' : 'Find file…';
+        // Regex only applies to grep — hide button visual when in files mode
+        btnRegex.style.display = mode === 'grep' ? '' : 'none';
         triggerSearch();
+    }
+
+    function toggleRegex() {
+        grepMode = grepMode === 'plain' ? 'regex' : 'plain';
+        syncRegexButton();
+        triggerSearch();
+    }
+
+    function syncRegexButton() {
+        btnRegex.className = btnRegex.className.replace(/btn-(active|inactive)/g, '') + (grepMode === 'regex' ? ' btn-active' : ' btn-inactive');
+        btnRegex.style.display = currentMode === 'grep' ? '' : 'none';
     }
 
     // ── Search input ─────────────────────────────────────────────────────────
@@ -52,7 +75,7 @@
             return;
         }
         resultCount.textContent = 'Searching…';
-        vscode.postMessage({ command: 'search', query, mode: currentMode });
+        vscode.postMessage({ command: 'search', query, mode: currentMode, grepMode });
     }
 
     // ── Keyboard navigation ──────────────────────────────────────────────────
@@ -79,6 +102,13 @@
             case 'Tab':
                 e.preventDefault();
                 setMode(currentMode === 'grep' ? 'files' : 'grep');
+                break;
+            case 'r':
+            case 'R':
+                if (e.altKey) {
+                    e.preventDefault();
+                    if (currentMode === 'grep') { toggleRegex(); }
+                }
                 break;
         }
     });
@@ -208,6 +238,12 @@
                 searchInput.value = '';
                 searchInput.focus();
                 renderResults([]);
+                break;
+            case 'setQuery':
+                if (msg.mode) { setMode(msg.mode); }
+                searchInput.value = msg.query || '';
+                searchInput.focus();
+                triggerSearch();
                 break;
         }
     });
