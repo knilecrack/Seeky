@@ -1,0 +1,195 @@
+/* Tailwind v4 — utilities only (no preflight reset) */
+@import "tailwindcss/utilities";
+
+/* ── Rosé Pine colour tokens ──────────────────────────────────────────────── */
+:root {
+    /* Rosé Pine Main — dark variant */
+    --rp-base: #191724;
+    --rp-surface: #1f1d2e;
+    --rp-overlay: #26233a;
+    --rp-muted: #6e6a86;
+    --rp-subtle: #908caa;
+    --rp-text: #e0def4;
+    --rp-love: #eb6f92;
+    --rp-gold: #f6c177;
+    --rp-rose: #ebbcba;
+    --rp-pine: #31748f;
+    --rp-foam: #9ccfd8;
+    --rp-iris: #c4a7e7;
+    --rp-hl-low: #21202e;
+    --rp-hl-med: #403d52;
+    --rp-hl-high: #524f67;
+}
+
+body.vscode-light {
+    /* Rosé Pine Dawn — light variant */
+    --rp-base: #faf4ed;
+    --rp-surface: #fffaf3;
+    --rp-overlay: #f2e9e1;
+    --rp-muted: #9893a5;
+    --rp-subtle: #797593;
+    --rp-text: #464261;
+    --rp-love: #b4637a;
+    --rp-gold: #ea9d34;
+    --rp-rose: #d7827e;
+    --rp-pine: #286983;
+    --rp-foam: #56949f;
+    --rp-iris: #907aa9;
+    --rp-hl-low: #f4ede8;
+    --rp-hl-med: #dfdad9;
+    --rp-hl-high: #cecacd;
+}
+
+/* ── Button states ────────────────────────────────────────────────────────── */
+.btn-active {
+    background: var(--rp-pine) !important;
+    color: var(--rp-base) !important;
+    opacity: 1 !important;
+}
+
+.btn-inactive {
+    background: transparent;
+    color: var(--rp-subtle);
+    opacity: 0.8;
+}
+
+.btn-inactive:hover {
+    opacity: 1;
+    background: var(--rp-hl-med);
+    color: var(--rp-text);
+}
+
+.segmented-btn {
+    border: none;
+    outline: none;
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+
+/* ── Result item states ───────────────────────────────────────────────────── */
+.result-item {
+    border-left-width: 2px;
+    border-left-color: transparent;
+    transition: background 80ms ease, border-left-color 80ms ease;
+}
+
+.result-item:hover:not(.selected) {
+    background: var(--rp-hl-low);
+}
+
+.result-item.selected {
+    background: var(--rp-hl-med);
+    color: var(--rp-text);
+    border-left-color: var(--rp-pine) !important;
+}
+
+.result-item.selected * {
+    color: inherit !important;
+    opacity: 1 !important;
+}
+
+.result-item.selected .search-match {
+    background: var(--rp-gold) !important;
+    color: var(--rp-base) !important;
+}
+
+/* ── Search match highlight ───────────────────────────────────────────────── */
+mark.search-match {
+    background: var(--rp-gold);
+    color: var(--rp-base);
+    border-radius: 2px;
+    padding: 0 2px;
+    font-style: normal;
+    font-weight: 600;
+}
+
+/* ── Preview highlight ────────────────────────────────────────────────────── */
+.preview-line.highlight {
+    background: var(--rp-hl-low);
+    border-left: 2px solid var(--rp-pine);
+}
+
+.preview-line.highlight .line-num {
+    opacity: 1;
+    color: var(--rp-foam);
+}
+
+/* ── Search input focus ───────────────────────────────────────────────────── */
+#search-input:focus {
+    border-color: var(--rp-pine) !important;
+    box-shadow: 0 0 0 1px var(--rp-pine);
+}
+
+#search-input::placeholder {
+    color: var(--rp-muted);
+}
+
+/* ── kbd keys ─────────────────────────────────────────────────────────────── */
+kbd {
+    display: inline-flex;
+    align-items: center;
+    background: var(--rp-overlay);
+    border: 1px solid var(--rp-hl-high);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    padding: 0 5px;
+    font-family: inherit;
+    font-size: 10px;
+    line-height: 16px;
+    color: var(--rp-subtle);
+}
+
+/* ── Scrollbars ───────────────────────────────────────────────────────────── */
+::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--rp-hl-high);
+    border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--rp-muted);
+}
+
+/* ── Result count ─────────────────────────────────────────────────────────── */
+#result-count {
+    color: var(--rp-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+/* ── Empty state ──────────────────────────────────────────────────────────── */
+.empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 48px 16px;
+    text-align: center;
+    font-size: 12px;
+    color: var(--rp-muted);
+}
+
+.empty-state .codicon {
+    font-size: 28px !important;
+    opacity: 0.3;
+    line-height: 1;
+    color: var(--rp-iris);
+}
+
+.empty-state-text {
+    opacity: 0.55;
+    font-style: italic;
+    color: var(--rp-subtle);
+}
