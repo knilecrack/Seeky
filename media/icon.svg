@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none">
+  <!-- magnifying glass -->
+  <circle cx="6.5" cy="6.5" r="4" stroke="#9ccfd8" stroke-width="1.5"/>
+  <line x1="9.7" y1="9.7" x2="13" y2="13" stroke="#9ccfd8" stroke-width="1.5" stroke-linecap="round"/>
+  <!-- small lightning / neon spark inside -->
+  <path d="M5.5 5 L7 6.5 L6 6.5 L7.5 8.5" stroke="#f6c177" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>
