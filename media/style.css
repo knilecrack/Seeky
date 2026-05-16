@@ -1,0 +1,67 @@
+/* ── Button states ────────────────────────────────────────────────────────── */
+.btn-active {
+    background: var(--vscode-button-background) !important;
+    color: var(--vscode-button-foreground) !important;
+    border-color: var(--vscode-button-background) !important;
+    opacity: 1 !important;
+}
+.btn-inactive {
+    background: transparent;
+    color: var(--vscode-foreground);
+    opacity: 0.6;
+}
+.btn-inactive:hover {
+    opacity: 1;
+    background: var(--vscode-toolbar-hoverBackground);
+}
+
+/* ── Result item states ───────────────────────────────────────────────────── */
+.result-item:hover:not(.selected) {
+    background: var(--vscode-list-hoverBackground);
+}
+.result-item.selected {
+    background: var(--vscode-list-activeSelectionBackground);
+    color: var(--vscode-list-activeSelectionForeground);
+    border-left-color: var(--vscode-focusBorder) !important;
+}
+.result-item.selected * {
+    color: inherit !important;
+    opacity: 1 !important;
+}
+
+/* ── Preview highlight ────────────────────────────────────────────────────── */
+.preview-line.highlight {
+    background: var(--vscode-editor-findMatchHighlightBackground, rgba(255, 214, 0, 0.12));
+}
+.preview-line.highlight .line-num {
+    opacity: 1;
+    color: var(--vscode-editorLineNumber-activeForeground, var(--vscode-editorLineNumber-foreground));
+}
+
+/* ── Search input focus ───────────────────────────────────────────────────── */
+#search-input:focus {
+    border-color: var(--vscode-focusBorder) !important;
+}
+#search-input::placeholder {
+    color: var(--vscode-input-placeholderForeground);
+}
+
+/* ── kbd keys ─────────────────────────────────────────────────────────────── */
+kbd {
+    background: var(--vscode-keybindingLabel-background, rgba(128, 128, 128, 0.15));
+    border: 1px solid var(--vscode-keybindingLabel-border, rgba(128, 128, 128, 0.4));
+    border-bottom-width: 2px;
+    border-radius: 3px;
+    padding: 0 4px;
+    font-family: inherit;
+    font-size: 10px;
+}
+
+/* ── Scrollbars ───────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+    background: var(--vscode-scrollbarSlider-background);
+    border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--vscode-scrollbarSlider-hoverBackground); }
