@@ -8,10 +8,15 @@ import {
 } from './searchProvider';
 
 export type SearchMode = 'grep' | 'files';
+export type GrepMode = 'plain' | 'regex';
 
 function getNonce(): string {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
     return Array.from({ length: 32 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+}
+
+function escAttr(s: string): string {
+    return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
 }
 
 export class ModalSearchPanel {
@@ -25,7 +30,8 @@ export class ModalSearchPanel {
 
     private constructor(
         private readonly context: vscode.ExtensionContext,
-        mode: SearchMode
+        mode: SearchMode,
+        initialQuery: string
     ) {
         this.workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
         // Capture the last focused editor column *before* the panel opens.
@@ -43,7 +49,7 @@ export class ModalSearchPanel {
             }
         );
 
-        this.panel.webview.html = this.getHtmlContent(mode);
+        this.panel.webview.html = this.getHtmlContent(mode, initialQuery);
         this.panel.webview.onDidReceiveMessage(msg => this.handleMessage(msg));
         this.panel.onDidDispose(() => {
             ModalSearchPanel.instance = undefined;
@@ -51,13 +57,17 @@ export class ModalSearchPanel {
         });
     }
 
-    static show(context: vscode.ExtensionContext, mode: SearchMode): void {
+    static show(context: vscode.ExtensionContext, mode: SearchMode, initialQuery = ''): void {
         if (ModalSearchPanel.instance) {
             ModalSearchPanel.instance.panel.reveal(vscode.ViewColumn.Active);
-            ModalSearchPanel.instance.panel.webview.postMessage({ command: 'setMode', mode });
+            if (initialQuery) {
+                ModalSearchPanel.instance.panel.webview.postMessage({ command: 'setQuery', query: initialQuery, mode });
+            } else {
+                ModalSearchPanel.instance.panel.webview.postMessage({ command: 'setMode', mode });
+            }
             return;
         }
-        ModalSearchPanel.instance = new ModalSearchPanel(context, mode);
+        ModalSearchPanel.instance = new ModalSearchPanel(context, mode, initialQuery);
     }
 
     static dispose(): void {
@@ -67,7 +77,11 @@ export class ModalSearchPanel {
     private async handleMessage(msg: { command: string;[key: string]: unknown }): Promise<void> {
         switch (msg.command) {
             case 'search':
-                this.runSearch(msg['query'] as string, msg['mode'] as SearchMode);
+                this.runSearch(
+                    msg['query'] as string,
+                    msg['mode'] as SearchMode,
+                    (msg['grepMode'] as GrepMode | undefined) ?? 'plain'
+                );
                 break;
             case 'preview':
                 this.sendPreview(msg['item'] as SearchResult);
@@ -81,7 +95,7 @@ export class ModalSearchPanel {
         }
     }
 
-    private runSearch(query: string, mode: SearchMode): void {
+    private runSearch(query: string, mode: SearchMode, grepMode: GrepMode): void {
         this.cancelSearch?.();
         this.cancelSearch = undefined;
 
@@ -101,7 +115,7 @@ export class ModalSearchPanel {
         };
 
         if (mode === 'grep') {
-            this.cancelSearch = searchGrep(query, this.workspacePath, onResult, onDone);
+            this.cancelSearch = searchGrep(query, this.workspacePath, grepMode, onResult, onDone);
         } else {
             this.cancelSearch = searchFiles(query, this.workspacePath, onResult, onDone);
         }
@@ -139,7 +153,7 @@ export class ModalSearchPanel {
         }
     }
 
-    private getHtmlContent(mode: SearchMode): string {
+    private getHtmlContent(mode: SearchMode, initialQuery: string): string {
         const nonce = getNonce();
         const webview = this.panel.webview;
 
@@ -167,7 +181,7 @@ export class ModalSearchPanel {
     <title>Seeky</title>
 </head>
 <body class="h-screen overflow-hidden" style="background:var(--vscode-editor-background);color:var(--vscode-editor-foreground);font-family:var(--vscode-font-family,system-ui,sans-serif);font-size:var(--vscode-font-size,13px)">
-    <div id="app" data-mode="${mode}" class="flex flex-col h-full overflow-hidden">
+    <div id="app" data-mode="${mode}" data-initial-query="${escAttr(initialQuery)}" class="flex flex-col h-full overflow-hidden">
 
         <!-- Header: search input + mode toggle -->
         <div id="header" class="flex items-center gap-2 px-3 py-2 shrink-0 border-b"
@@ -185,6 +199,8 @@ export class ModalSearchPanel {
             <div class="flex gap-1 shrink-0">
                 <button id="btn-grep"  class="btn-mode px-3 py-1 text-xs rounded border transition-all ${mode === 'grep' ? 'btn-active' : 'btn-inactive'}"
                         style="border-color:var(--vscode-widget-border,var(--vscode-panel-border))">grep</button>
+                <button id="btn-regex" class="btn-mode px-3 py-1 text-xs rounded border font-mono transition-all btn-inactive"
+                        style="border-color:var(--vscode-widget-border,var(--vscode-panel-border))" title="Toggle regex mode (Alt+R)">.*</button>
                 <button id="btn-files" class="btn-mode px-3 py-1 text-xs rounded border transition-all ${mode === 'files' ? 'btn-active' : 'btn-inactive'}"
                         style="border-color:var(--vscode-widget-border,var(--vscode-panel-border))">files</button>
             </div>
@@ -212,6 +228,7 @@ export class ModalSearchPanel {
             <span><kbd>↑↓</kbd> navigate</span>
             <span><kbd>↵</kbd> open</span>
             <span><kbd>Tab</kbd> mode</span>
+            <span><kbd>Alt+R</kbd> regex</span>
             <span><kbd>Esc</kbd> close</span>
             <span id="result-count" class="ml-auto"></span>
         </div>

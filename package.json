@@ -23,12 +23,17 @@
     "commands": [
       {
         "command": "seeky.liveGrep",
-        "title": "Live Grep (ripgrep)",
+        "title": "Live Grep",
         "category": "Seeky"
       },
       {
         "command": "seeky.findFiles",
-        "title": "Find Files (ripgrep)",
+        "title": "Find Files",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.searchWordUnderCursor",
+        "title": "Search Word Under Cursor",
         "category": "Seeky"
       }
     ],
@@ -44,6 +49,12 @@
         "key": "ctrl+shift+alt+p",
         "mac": "cmd+shift+alt+p",
         "when": "!terminalFocus"
+      },
+      {
+        "command": "seeky.searchWordUnderCursor",
+        "key": "ctrl+shift+h",
+        "mac": "cmd+shift+h",
+        "when": "editorFocus"
       }
     ],
     "configuration": {
@@ -68,5 +79,8 @@
     "@types/vscode": "^1.95.0",
     "esbuild": "^0.20.2",
     "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "@ff-labs/fff-node": "^0.8.1"
   }
 }
