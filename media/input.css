@@ -38,9 +38,9 @@ body {
     background: var(--bg-float);
     border: 1px solid var(--border-outer);
     border-radius: 5px;
-    width: 95vw;
+    width: 80vw;
     max-width: 1400px;
-    height: 90vh;
+    height: 80vh;
     display: flex;
     flex-direction: column;
     box-shadow: 0 10px 30px rgba(0,0,0,0.5);
