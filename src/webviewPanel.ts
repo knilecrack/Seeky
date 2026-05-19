@@ -247,120 +247,61 @@ export class ModalSearchPanel {
 
         html, body {
             height: 100%; width: 100%; margin: 0; padding: 0; overflow: hidden;
-        }
-
-        body { 
-            background: var(--rp-base); color: var(--rp-text); 
-            font-family: ${fontFamily}; font-size: 13px; 
-            padding: 12px; box-sizing: border-box;
-            display: flex; flex-direction: column; gap: 12px;
-        }
-        
-        .pane {
-            position: relative; border: 1px solid var(--rp-hl-med);
-            background: var(--rp-base); display: flex; flex-direction: column;
-            min-height: 0 !important;
-        }
-        
-        .min-h-0 {
-            min-height: 0 !important;
-        }
-        
-        .pane-label {
-            position: absolute; top: -9px; left: 12px; background: var(--rp-base);
-            padding: 0 6px; font-size: 10px; font-weight: 700; color: var(--rp-pine);
-            z-index: 10; text-transform: lowercase; letter-spacing: 0.5px; border: 1px solid var(--rp-hl-med);
-        }
-
-        #results-pane { flex: 1; }
-        #search-pane { height: 48px; flex-shrink: 0; }
-        #info-pane { height: 240px; flex-shrink: 0; }
-        #preview-pane { flex: 1; }
-
-        @media (max-width: 1000px) {
-            body { flex-direction: column !important; overflow-y: auto !important; height: auto !important; }
-            #results-pane, #info-pane, #preview-pane { height: 400px; flex: none; }
-        }
-
-        .empty-state {
-            display: flex; flex-direction: column; align-items: center; justify-content: center;
-            gap: 16px; padding: 80px 20px; color: var(--rp-muted); opacity: 0.5;
-        }
-        
-        #search-input {
-            width: 100%; height: 100%; padding: 0 12px;
-            background: transparent; border: none; outline: none;
-            color: var(--rp-text); font-size: 16px; font-family: 'Monaspace Neon', monospace;
-        }
-
-        kbd {
-            color: var(--rp-iris); padding: 0 2px;
-            font-size: 10px;
+            background: var(--bg-outer) !important;
         }
     </style>
 </head>
-<body class="vscode-dark">
-    <!-- Top area containing results and preview, must shrink to allow bottom bar -->
-    <div class="flex flex-1 gap-3 min-h-0">
-        <div id="left-col" class="flex flex-col flex-[4] min-w-0 min-h-0">
-            <div id="results-pane" class="pane flex-1">
-                <span class="pane-label" id="results-label">${mode === 'grep' ? 'live grep' : 'file finder'}</span>
+<body>
+    <div id="telescope-container">
+        <!-- Title Bar -->
+        <div class="bar bar-divider justify-between">
+            <div class="flex items-center gap-2">
+                <i class="codicon codicon-telescope text-accent" style="font-size: 14px"></i>
+                <span id="title-label" class="font-bold text-primary">Live Grep</span>
+            </div>
+            <div class="flex items-center gap-4 text-muted">
+                <span><kbd class="text-accent bg-transparent">↑↓</kbd> nav</span>
+                <span><kbd class="text-accent bg-transparent">↵</kbd> open</span>
+                <span><kbd class="text-accent bg-transparent">esc</kbd> close</span>
+            </div>
+        </div>
+
+        <!-- Search Input -->
+        <div id="search-area">
+            <span class="text-accent font-bold" style="font-size: 14px">❯</span>
+            <input type="text" id="search-input" autocomplete="off" spellcheck="false">
+            <span id="result-count" class="text-muted text-[10.5px]"></span>
+        </div>
+
+        <!-- Content Area -->
+        <div id="content-area">
+            <!-- Results List -->
+            <div id="results-col">
                 <div id="results-list" class="flex-1 overflow-y-auto relative">
                     <div id="results-spacer" style="pointer-events: none;"></div>
-                    <div id="results-content" class="w-full" style="position: absolute; top: 0; left: 0; right: 0; padding-top: 8px;"></div>
-                    <div id="results-empty" class="p-3">
-                        <div class="empty-state">
-                            <i class="codicon codicon-search" style="font-size:24px"></i>
-                            <span>Type to start searching</span>
-                        </div>
-                    </div>
+                    <div id="results-content" class="w-full absolute top-0 left-0 right-0"></div>
+                </div>
+            </div>
+
+            <!-- Preview Pane -->
+            <div id="preview-col">
+                <div id="preview-header">
+                    <span id="preview-filename" class="text-accent font-bold"></span>
+                    <span class="text-border-inner mx-2">│</span>
+                    <span id="preview-path" class="text-muted truncate"></span>
+                </div>
+                <div id="preview-content" class="flex-1 overflow-auto p-2">
+                    <!-- Preview lines injected here -->
                 </div>
             </div>
         </div>
 
-        <div id="right-col" class="flex flex-col flex-[6] min-w-0 min-h-0">
-            <div id="info-pane" class="pane mb-3 shrink-0">
-                <span class="pane-label">file info</span>
-                <div id="info-content" class="p-4 font-mono text-[11px] leading-relaxed overflow-auto" style="color:var(--rp-subtle)">
-                    <div class="empty-state">
-                        <i class="codicon codicon-info" style="font-size:20px"></i>
-                        <span>Select a match to view details</span>
-                    </div>
-                </div>
-            </div>
-
-            <div id="preview-pane" class="pane flex-1 min-h-0">
-                <span class="pane-label" id="preview-label">preview</span>
-                <div id="preview-content" class="flex-1 overflow-auto" style="background:var(--rp-base)">
-                    <div class="empty-state">
-                        <i class="codicon codicon-go-to-file" style="font-size:24px"></i>
-                        <span>No preview available</span>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-    
-    <!-- Bottom fixed area -->
-    <div id="search-pane" class="pane shrink-0">
-        <span class="pane-label">prompt</span>
-        <div class="flex items-center h-full gap-2 px-3">
-            <i class="codicon codicon-search text-pine opacity-50"></i>
-            <input
-                type="text" id="search-input"
-                placeholder="${mode === 'grep' ? 'search code…' : 'find files…'}"
-                autocomplete="off" spellcheck="false"
-            >
-            <div id="search-controls" class="flex gap-4 shrink-0 items-center">
-                <button id="btn-regex" class="segmented-btn btn-inactive" title="Toggle Regex (Alt+R)">
-                    <i class="codicon codicon-regex"></i>
-                </button>
-                <span id="result-count" class="text-muted font-mono text-[11px] opacity-40"></span>
-                <div id="footer" class="flex gap-4 text-[10px] text-muted shrink-0 opacity-40 ml-4">
-                    <span><kbd>↑↓</kbd> browse</span>
-                    <span><kbd>↵</kbd> open</span>
-                    <span><kbd>Esc</kbd> quit</span>
-                </div>
+        <!-- Status Bar -->
+        <div class="bar bar-divider-top justify-between">
+            <span id="status-mode" class="font-bold text-accent">-- INSERT --</span>
+            <div class="flex items-center gap-2 text-muted">
+                <span>●</span>
+                <span id="status-source">workspace</span>
             </div>
         </div>
     </div>
