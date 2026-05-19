@@ -124,11 +124,12 @@ export class ModalSearchPanel {
 
         const items: SearchResult[] = [];
         const onResult = (item: SearchResult) => items.push(item);
+        const storagePath = this.context.globalStorageUri.fsPath;
 
         if (mode === 'grep') {
-            this.cancelSearch = searchGrep(query, this.workspacePath, grepMode, onResult, onDone);
+            this.cancelSearch = searchGrep(query, this.workspacePath, grepMode, storagePath, onResult, onDone);
         } else if (mode === 'files') {
-            this.cancelSearch = searchFiles(query, this.workspacePath, onResult, onDone);
+            this.cancelSearch = searchFiles(query, this.workspacePath, storagePath, onResult, onDone);
         } else if (mode === 'recent') {
             const mru = this.context.globalState.get<string[]>('mruFiles', []);
             mru.forEach(file => {

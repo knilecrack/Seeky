@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from 'node:fs';
+import { readFileSync, statSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
@@ -41,7 +41,7 @@ let finderInstance: FileFinder | null = null;
 let finderPromise: Promise<FileFinder | null> | null = null;
 let currentBasePath: string | null = null;
 
-async function getOrCreateFinder(basePath: string): Promise<FileFinder | null> {
+async function getOrCreateFinder(basePath: string, storagePath?: string): Promise<FileFinder | null> {
     if (finderInstance && currentBasePath === basePath) {
         return finderInstance;
     }
@@ -59,7 +59,25 @@ async function getOrCreateFinder(basePath: string): Promise<FileFinder | null> {
     currentBasePath = basePath;
     finderPromise = (async () => {
         const { FileFinder: FF } = await dynamicImport('@ff-labs/fff-node');
-        const result = FF.create({ basePath, aiMode: false });
+        
+        let frecencyDbPath;
+        let historyDbPath;
+        
+        if (storagePath) {
+            if (!existsSync(storagePath)) {
+                mkdirSync(storagePath, { recursive: true });
+            }
+            frecencyDbPath = join(storagePath, 'frecency.db');
+            historyDbPath = join(storagePath, 'history.db');
+        }
+
+        const result = FF.create({ 
+            basePath, 
+            aiMode: false,
+            frecencyDbPath,
+            historyDbPath
+        });
+        
         if (!result.ok) {
             console.error('[Seeky] FFF init failed:', result.error);
             return null;
@@ -83,13 +101,14 @@ export function searchGrep(
     query: string,
     workspacePath: string,
     grepMode: 'plain' | 'regex',
+    storagePath: string | undefined,
     onResult: (result: GrepResult) => void,
     onDone: (cancelled: boolean, duration?: number) => void
 ): () => void {
     let cancelled = false;
 
     (async () => {
-        const finder = await getOrCreateFinder(workspacePath);
+        const finder = await getOrCreateFinder(workspacePath, storagePath);
         if (cancelled || !finder) { onDone(cancelled); return; }
 
         const start = performance.now();
@@ -124,13 +143,14 @@ export function searchGrep(
 export function searchFiles(
     query: string,
     workspacePath: string,
+    storagePath: string | undefined,
     onResult: (result: FileResult) => void,
     onDone: (cancelled: boolean, duration?: number) => void
 ): () => void {
     let cancelled = false;
 
     (async () => {
-        const finder = await getOrCreateFinder(workspacePath);
+        const finder = await getOrCreateFinder(workspacePath, storagePath);
         if (cancelled || !finder) { onDone(cancelled); return; }
 
         const start = performance.now();
