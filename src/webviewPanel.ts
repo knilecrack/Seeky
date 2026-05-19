@@ -279,7 +279,7 @@ export class ModalSearchPanel {
             <div id="results-col">
                 <div id="results-list" class="flex-1 overflow-y-auto relative">
                     <div id="results-spacer" style="pointer-events: none;"></div>
-                    <div id="results-content" class="w-full absolute top-0 left-0 right-0"></div>
+                    <div id="results-content" class="w-full" style="position: absolute; top: 0; left: 0; right: 0;"></div>
                 </div>
             </div>
 
@@ -305,6 +305,10 @@ export class ModalSearchPanel {
             </div>
         </div>
     </div>
+    <script nonce="${nonce}">
+        window.INITIAL_MODE = "${mode}";
+        window.INITIAL_QUERY = "${_initialQuery}";
+    </script>
     <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
