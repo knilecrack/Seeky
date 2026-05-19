@@ -3,7 +3,6 @@
 
 /* ── Rosé Pine colour tokens ──────────────────────────────────────────────── */
 :root {
-    /* Rosé Pine Main — dark variant */
     --rp-base: #191724;
     --rp-surface: #1f1d2e;
     --rp-overlay: #26233a;
@@ -19,10 +18,14 @@
     --rp-hl-low: #21202e;
     --rp-hl-med: #403d52;
     --rp-hl-high: #524f67;
+    
+    /* UI Specific */
+    --ui-border: var(--rp-pine);
+    --ui-border-dim: var(--rp-hl-med);
+    --ui-accent: var(--rp-foam);
 }
 
 body.vscode-light {
-    /* Rosé Pine Dawn — light variant */
     --rp-base: #faf4ed;
     --rp-surface: #fffaf3;
     --rp-overlay: #f2e9e1;
@@ -40,113 +43,103 @@ body.vscode-light {
     --rp-hl-high: #cecacd;
 }
 
+body {
+    padding: 12px !important;
+}
+
+/* ── Sharp TUI Borders ────────────────────────────────────────────────────── */
+.pane {
+    position: relative;
+    border: 1px solid var(--ui-border);
+    background: var(--rp-base);
+    display: flex;
+    flex-direction: column;
+}
+
+.pane-label {
+    position: absolute;
+    top: -9px;
+    left: 12px;
+    background: var(--rp-base);
+    padding: 0 6px;
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--ui-accent);
+    z-index: 10;
+    text-transform: lowercase;
+    font-family: 'Monaspace Neon', monospace;
+}
+
 /* ── Button states ────────────────────────────────────────────────────────── */
 .btn-active {
-    background: var(--rp-pine) !important;
-    color: var(--rp-base) !important;
+    color: var(--rp-gold) !important;
     opacity: 1 !important;
 }
 
 .btn-inactive {
     background: transparent;
     color: var(--rp-subtle);
-    opacity: 0.8;
-}
-
-.btn-inactive:hover {
-    opacity: 1;
-    background: var(--rp-hl-med);
-    color: var(--rp-text);
+    opacity: 0.5;
 }
 
 .segmented-btn {
     border: none;
     outline: none;
     cursor: pointer;
-    font-size: 12px;
-    line-height: 1;
+    font-size: 14px;
     display: inline-flex;
     align-items: center;
-    gap: 5px;
 }
 
 /* ── Result item states ───────────────────────────────────────────────────── */
 .result-item {
-    border-left-width: 2px;
-    border-left-color: transparent;
-    transition: background 80ms ease, border-left-color 80ms ease;
-}
-
-.result-item:hover:not(.selected) {
-    background: var(--rp-hl-low);
+    padding: 4px 12px !important;
+    border: none !important;
+    transition: none !important;
 }
 
 .result-item.selected {
-    background: var(--rp-hl-med);
-    color: var(--rp-text);
-    border-left-color: var(--rp-pine) !important;
+    background: var(--rp-hl-med) !important;
+    color: var(--rp-text) !important;
 }
 
-.result-item.selected * {
-    color: inherit !important;
-    opacity: 1 !important;
-}
-
-.result-item.selected .search-match {
-    background: var(--rp-gold) !important;
-    color: var(--rp-base) !important;
+.result-item.selected .text-foam {
+    color: var(--rp-gold) !important;
 }
 
 /* ── Search match highlight ───────────────────────────────────────────────── */
 mark.search-match {
-    background: var(--rp-gold);
-    color: var(--rp-base);
-    border-radius: 2px;
-    padding: 0 2px;
-    font-style: normal;
-    font-weight: 600;
+    background: transparent;
+    color: var(--rp-gold);
+    text-decoration: underline;
+    font-weight: 700;
+    padding: 0;
 }
 
 /* ── Preview highlight ────────────────────────────────────────────────────── */
 .preview-line.highlight {
     background: var(--rp-hl-low);
-    border-left: 2px solid var(--rp-pine);
 }
 
 .preview-line.highlight .line-num {
     opacity: 1;
-    color: var(--rp-foam);
+    color: var(--rp-gold);
 }
 
-/* ── Search input focus ───────────────────────────────────────────────────── */
+/* ── Search input ─────────────────────────────────────────────────────────── */
 #search-input:focus {
-    border-color: var(--rp-pine) !important;
-    box-shadow: 0 0 0 1px var(--rp-pine);
+    outline: none;
 }
 
 #search-input::placeholder {
     color: var(--rp-muted);
-}
-
-/* ── kbd keys ─────────────────────────────────────────────────────────────── */
-kbd {
-    display: inline-flex;
-    align-items: center;
-    background: var(--rp-overlay);
-    border: 1px solid var(--rp-hl-high);
-    border-bottom-width: 2px;
-    border-radius: 4px;
-    padding: 0 5px;
-    font-family: inherit;
-    font-size: 10px;
-    line-height: 16px;
-    color: var(--rp-subtle);
+    opacity: 0.3;
 }
 
 /* ── Scrollbars ───────────────────────────────────────────────────────────── */
 ::-webkit-scrollbar {
-    width: 5px;
-    height: 5px;
+    width: 4px;
+    height: 4px;
 }
 
 ::-webkit-scrollbar-track {
@@ -154,42 +147,25 @@ kbd {
 }
 
 ::-webkit-scrollbar-thumb {
-    background: var(--rp-hl-high);
-    border-radius: 3px;
+    background: var(--ui-border);
 }
 
-::-webkit-scrollbar-thumb:hover {
-    background: var(--rp-muted);
-}
-
-/* ── Result count ─────────────────────────────────────────────────────────── */
-#result-count {
-    color: var(--rp-muted);
-    font-variant-numeric: tabular-nums;
-}
-
-/* ── Empty state ──────────────────────────────────────────────────────────── */
-.empty-state {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    padding: 48px 16px;
-    text-align: center;
-    font-size: 12px;
-    color: var(--rp-muted);
-}
-
-.empty-state .codicon {
-    font-size: 28px !important;
-    opacity: 0.3;
-    line-height: 1;
-    color: var(--rp-iris);
-}
-
-.empty-state-text {
-    opacity: 0.55;
-    font-style: italic;
+/* ── Metadata Display ─────────────────────────────────────────────────────── */
+.meta-label {
     color: var(--rp-subtle);
+    width: 140px;
+    display: inline-block;
+}
+
+.meta-value {
+    color: var(--rp-text);
+}
+
+/* ── Footer ───────────────────────────────────────────────────────────────── */
+kbd {
+    background: transparent;
+    border: none;
+    color: var(--rp-iris);
+    padding: 0;
+    font-size: 10px;
 }

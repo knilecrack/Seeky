@@ -1,8 +1,6 @@
 // @ts-check
 (function () {
-    'use strict';
-
-    // @ts-ignore
+    // @ts-expect-error acquireVsCodeApi is provided by the VS Code webview runtime
     const vscode = acquireVsCodeApi();
 
     // ── DOM refs ──────────────────────────────────────────────────────────────
@@ -22,7 +20,6 @@
     let currentMode = 'grep';
     let grepMode = 'plain';
     let selectedIndex = -1;
-    let results = [];
     let navItems = [];
     let virtualItems = [];
     let totalHeight = 0;
@@ -30,12 +27,36 @@
     const history = [];
     let historyIndex = -1;
 
-    const HEADER_HEIGHT = 40;
-    const MATCH_HEIGHT = 37;
-    const FILE_ITEM_HEIGHT = 73;
-    const GROUP_GAP = 24;
+    const HEADER_HEIGHT = 32;
+    const MATCH_HEIGHT = 28;
+    const FILE_ITEM_HEIGHT = 28;
+    const GROUP_GAP = 16;
 
     const MODES = ['grep', 'files', 'recent', 'buffers', 'symbols'];
+
+    function getFileIcon(filename) {
+        const ext = filename.split('.').pop().toLowerCase();
+        const icons = {
+            'js': 'vscode-js',
+            'ts': 'vscode-ts',
+            'json': 'json',
+            'md': 'markdown',
+            'css': 'css',
+            'html': 'html',
+            'rs': 'rust',
+            'py': 'python',
+            'go': 'go',
+            'c': 'symbol-method',
+            'cpp': 'symbol-method',
+            'h': 'symbol-method',
+            'txt': 'file-text',
+            'png': 'file-media',
+            'jpg': 'file-media',
+            'svg': 'file-media',
+            'sh': 'terminal'
+        };
+        return icons[ext] || 'file';
+    }
 
     // ── Initial focus + focus management ──────────────────────────────────────
     searchInput.focus();
@@ -83,7 +104,6 @@
 
     // ── Render results ────────────────────────────────────────────────────────
     function renderResults(items, capped = false, duration = null) {
-        results = items;
         navItems = [];
         virtualItems = [];
         let currentTop = 0;
@@ -176,28 +196,27 @@
             if (v.type === 'header') {
                 const { fname, dir } = splitPath(v.data.relativePath);
                 return `<div class="file-group" style="height:${v.height}px">` +
-                       `<div class="flex items-center gap-3 px-3 py-2 opacity-80 text-[12px] font-black text-foam uppercase tracking-widest border-b border-[var(--rp-hl-low)] mb-2">` +
+                       `<div class="flex items-center gap-2 px-6 py-1 text-[11px] font-bold text-foam uppercase tracking-wider opacity-80">` +
                        `<span>${escHtml(fname)}</span>` +
-                       `<span class="opacity-40 font-mono text-[10px] lowercase tracking-normal truncate">${escHtml(dir)}</span>` +
-                       `<span class="ml-auto text-iris font-mono text-[10px]">✦${v.data.matches.length}</span>` +
+                       `<span class="opacity-50 font-mono text-[9px] lowercase truncate">${escHtml(dir)}</span>` +
                        `</div></div>`;
             } else if (v.type === 'match') {
                 const match = v.data;
                 const sel = v.index === selectedIndex ? ' selected' : '';
+                const { fname, dir } = splitPath(match.relativePath || '');
+                const icon = getFileIcon(fname);
+
                 if (currentMode === 'grep' || currentMode === 'symbols') {
                     const highlight = (currentMode === 'symbols' && !searchInput.value) ? escHtml(match.text) : highlightText(match.text.trimStart(), searchInput.value, grepMode);
-                    const prefix = currentMode === 'symbols' ? `<span class="text-iris opacity-50 mr-2">[${match.kind}]</span>` : '';
-                    return `<div class="result-item cursor-pointer pl-10 pr-4 py-2.5 border-l-4 border-transparent transition-all flex gap-4${sel}" data-index="${v.index}" style="height:${v.height}px">` +
-                           `<span class="shrink-0 text-[10px] font-mono opacity-25 w-12 text-right">${match.line}:${match.col}</span>` +
-                           `<span class="truncate text-[13px] font-mono leading-relaxed" style="color:var(--rp-text)">${prefix}${highlight}</span>` +
+                    return `<div class="result-item cursor-pointer flex items-center gap-6 font-mono text-[12px] px-6${sel}" data-index="${v.index}" style="height:${v.height}px">` +
+                           `<span class="shrink-0 opacity-40 w-12 text-right">${match.line}</span>` +
+                           `<span class="truncate">${highlight}</span>` +
                            `</div>`;
                 } else {
-                    const { fname, dir } = splitPath(match.relativePath || '');
-                    return `<div class="result-item cursor-pointer border-b border-[var(--rp-hl-low)] p-5 flex items-center gap-4${sel}" data-index="${v.index}" style="height:${v.height}px">` +
-                        `<div class="flex flex-col min-w-0">` +
-                        `<span class="font-bold text-foam text-[15px] truncate">${highlightText(fname, searchInput.value, 'plain')}</span>` +
-                        `<span class="text-muted text-[11px] truncate opacity-50">${escHtml(dir)}</span>` +
-                        `</div>` +
+                    return `<div class="result-item cursor-pointer flex items-center gap-4 font-mono text-[12px] px-6${sel}" data-index="${v.index}" style="height:${v.height}px">` +
+                        `<i class="codicon codicon-${icon} shrink-0 opacity-50" style="font-size:14px"></i>` +
+                        `<span class="text-foam truncate">${highlightText(fname, searchInput.value, 'plain')}</span>` +
+                        `<span class="opacity-40 text-[11px] truncate">${escHtml(dir)}</span>` +
                         `</div>`;
                 }
             } else {
@@ -231,9 +250,9 @@
         
         const scrollTop = resultsList.scrollTop;
         const viewportHeight = resultsList.clientHeight;
-        const topPadding = 12;
+        const topPadding = 4;
         
-        const itemTop = item.top + topPadding;
+        const itemTop = item.top;
         const itemBottom = itemTop + item.height;
 
         if (itemTop < scrollTop) {
@@ -248,44 +267,60 @@
         const k = 1024;
         const sizes = ['B', 'KB', 'MB', 'GB'];
         const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+        const size = parseFloat((bytes / k ** i).toFixed(1));
+        return `${size} ${sizes[i]}`;
     }
 
     function updatePreviewAndInfo(item, stats = null) {
         const { fname, dir } = splitPath(item.relativePath || '');
-        let infoHtml = `<div class="flex flex-col gap-4">`;
-        infoHtml += `<div class="flex flex-col gap-1.5"><span class="text-[9px] uppercase font-black tracking-widest opacity-30">Path</span><span class="text-foam font-mono text-[12px] truncate">${escHtml(item.relativePath)}</span></div>`;
+        const ext = fname.split('.').pop() || 'plain';
         
-        if (item.type === 'grep' || item.type === 'symbol') {
-            infoHtml += `<div class="flex flex-col gap-1.5"><span class="text-[9px] uppercase font-black tracking-widest opacity-30">Location</span><span class="text-iris font-mono text-[12px]">Line ${item.line}, Col ${item.col}</span></div>`;
-        }
+        let infoHtml = `<div class="flex flex-col gap-1 font-mono text-[12px]">`;
+        
+        const row = (label, value) => `<div class="flex"><span class="meta-label">${label}:</span><span class="meta-value">${value}</span></div>`;
 
-        const gitColor = { 'modified': 'var(--rp-rose)', 'added': 'var(--rp-pine)', 'untracked': 'var(--rp-iris)', 'none': 'inherit' }[stats?.gitStatus || 'none'];
-        const gitText = stats?.gitStatus ? `<span style="color:${gitColor}">${stats.gitStatus.toUpperCase()}</span>` : '-';
+        infoHtml += row('Size', stats ? formatSize(stats.size) : '-');
+        infoHtml += row('Type', ext);
+        
+        const gitStatus = stats?.gitStatus || 'none';
+        const gitColor = { 
+            'modified': 'var(--rp-rose)', 
+            'added': 'var(--rp-pine)', 
+            'untracked': 'var(--rp-iris)', 
+            'unmodified': 'var(--rp-subtle)',
+            'none': 'inherit' 
+        }[gitStatus] || 'inherit';
+        infoHtml += `<div class="flex"><span class="meta-label">Git:</span><span class="font-bold" style="color:${gitColor}">${gitStatus}</span></div>`;
 
-        infoHtml += `<div class="grid grid-cols-2 gap-8 mt-2">` +
-                    `<div class="flex flex-col gap-1.5"><span class="text-[9px] uppercase font-black tracking-widest opacity-30">Git Status</span><span class="font-mono text-[11px] font-bold">${gitText}</span></div>` +
-                    `<div class="flex flex-col gap-1.5"><span class="text-[9px] uppercase font-black tracking-widest opacity-30">Size</span><span class="text-rose font-mono text-[12px]">${stats ? formatSize(stats.size) : '-'}</span></div>` +
-                    `</div>`;
-
+        infoHtml += `<div class="mt-4 opacity-30 text-[10px] uppercase font-black tracking-widest">Timings</div>`;
         if (stats) {
             const date = new Date(stats.mtime).toLocaleString();
-            infoHtml += `<div class="flex flex-col gap-1.5 mt-2"><span class="text-[9px] uppercase font-black tracking-widest opacity-30">Modified</span><span class="text-gold font-mono text-[12px] whitespace-nowrap">${date}</span></div>`;
+            infoHtml += row('Modified', date);
+        } else {
+            infoHtml += row('Modified', '-');
         }
         
         infoHtml += `</div>`;
         infoContent.innerHTML = infoHtml;
-        previewLabel.textContent = `${fname}${item.type === 'grep' || item.type === 'symbol' ? ':' + item.line : ''}`;
+        previewLabel.textContent = item.relativePath;
         vscode.postMessage({ command: 'preview', item });
     }
 
     function renderPreview(data) {
+        // Verify this preview still matches the current selection to avoid race conditions
+        const currentItem = navItems[selectedIndex]?.item;
+        if (!currentItem || 
+            currentItem.file !== data.item.file || 
+            (currentItem.type === 'grep' && currentItem.line !== data.item.line)) {
+            return;
+        }
+
         if (!data.content) {
             previewContent.innerHTML = `<div class="empty-state">Cannot read file</div>`;
             return;
         }
-        if (data.stats && navItems[selectedIndex]) {
-            updatePreviewAndInfo(navItems[selectedIndex].item, data.stats);
+        if (data.stats) {
+            updatePreviewAndInfo(currentItem, data.stats);
         }
         const lines = data.content.split('\n');
         let html = `<div class="p-6" style="font-family: inherit; font-size:13px; line-height:1.7; padding-bottom:50vh; color:var(--rp-text)">`;
@@ -379,8 +414,10 @@
                 break;
             case 'Tab':
                 e.preventDefault();
-                const nextIdx = (MODES.indexOf(currentMode) + 1) % MODES.length;
-                setMode(MODES[nextIdx]);
+                {
+                    const nextIdx = (MODES.indexOf(currentMode) + 1) % MODES.length;
+                    setMode(MODES[nextIdx]);
+                }
                 break;
             case 'r':
             case 'R':
@@ -451,10 +488,9 @@
             const re = new RegExp(pattern, 'gi');
             let result = '';
             let lastIndex = 0;
-            let match;
-            while ((match = re.exec(text)) !== null) {
+            for (let match = re.exec(text); match !== null; match = re.exec(text)) {
                 result += escHtml(text.slice(lastIndex, match.index));
-                result += `<mark class="search-match" style="background:var(--rp-gold);color:var(--rp-base);border-radius:2px;padding:0 2px;font-weight:600">${escHtml(match[0])}</mark>`;
+                result += `<mark class="search-match">${escHtml(match[0])}</mark>`;
                 lastIndex = match.index + match[0].length;
                 if (match[0].length === 0) { re.lastIndex++; }
             }
