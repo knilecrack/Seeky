@@ -1,14 +1,10 @@
-import { extname } from 'node:path';
 import * as vscode from 'vscode';
 import {
     searchGrep,
     searchFiles,
     readFilePreview,
-    SearchResult,
-    GrepResult,
-    FileResult,
-    SymbolResult,
 } from './searchProvider';
+import type { SearchResult } from './searchProvider';
 
 export type SearchMode = 'grep' | 'files' | 'recent' | 'buffers' | 'symbols';
 export type GrepMode = 'plain' | 'regex';
@@ -16,10 +12,6 @@ export type GrepMode = 'plain' | 'regex';
 function getNonce(): string {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
     return Array.from({ length: 32 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
-}
-
-function escAttr(s: string): string {
-    return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
 }
 
 export class ModalSearchPanel {
@@ -81,6 +73,11 @@ export class ModalSearchPanel {
             return;
         }
         ModalSearchPanel.instance = new ModalSearchPanel(context, mode, initialQuery);
+    }
+
+    static dispose(): void {
+        ModalSearchPanel.instance?.panel.dispose();
+        ModalSearchPanel.instance = undefined;
     }
 
     private async handleMessage(msg: { command: string;[key: string]: unknown }): Promise<void> {
@@ -174,7 +171,7 @@ export class ModalSearchPanel {
                                     col: sym.range.start.character + 1,
                                     text: sym.name,
                                     kind: vscode.SymbolKind[sym.kind],
-                                    containerName: container
+                                    ...(container ? { containerName: container } : {})
                                 });
                             }
                             if (sym.children) flatten(sym.children, sym.name);
@@ -189,9 +186,11 @@ export class ModalSearchPanel {
 
     private sendPreview(item: SearchResult): void {
         const targetLine = item.type === 'grep' || item.type === 'symbol' ? item.line : 1;
+        const targetCol = item.type === 'grep' || item.type === 'symbol' ? item.col : 1;
         const { content, startLine, stats } = readFilePreview(item.file, this.workspacePath, targetLine);
         this.panel.webview.postMessage({
             command: 'preview',
+            item: { file: item.file, line: targetLine, col: targetCol },
             content,
             targetLine,
             startLine,
@@ -215,10 +214,10 @@ export class ModalSearchPanel {
                 selection: new vscode.Range(line, col, line, col),
                 preview: false,
             });
-        } catch (err) { }
+        } catch { }
     }
 
-    private getHtmlContent(mode: SearchMode, initialQuery: string, history: string[]): string {
+    private getHtmlContent(mode: SearchMode, _initialQuery: string, _history: string[]): string {
         const nonce = getNonce();
         const webview = this.panel.webview;
         const fontFamily = this.getFontFamily();
@@ -240,41 +239,47 @@ export class ModalSearchPanel {
     <link rel="stylesheet" href="${codiconsUri}">
     <link rel="stylesheet" href="${styleUri}">
     <style>
-        @font-face { font-family: 'MonaspaceArgon'; src: url('${fontUris.argon}') format('woff2'); font-weight: 400; }
-        @font-face { font-family: 'MonaspaceKrypton'; src: url('${fontUris.krypton}') format('woff2'); font-weight: 400; }
-        @font-face { font-family: 'MonaspaceNeon'; src: url('${fontUris.neon}') format('woff2'); font-weight: 400; }
-        @font-face { font-family: 'MonaspaceRadon'; src: url('${fontUris.radon}') format('woff2'); font-weight: 400; }
-        @font-face { font-family: 'MonaspaceXenon'; src: url('${fontUris.xenon}') format('woff2'); font-weight: 400; }
+        @font-face { font-family: 'MonaspaceArgon'; src: url('${fontUris['argon']}') format('woff2'); font-weight: 400; }
+        @font-face { font-family: 'MonaspaceKrypton'; src: url('${fontUris['krypton']}') format('woff2'); font-weight: 400; }
+        @font-face { font-family: 'MonaspaceNeon'; src: url('${fontUris['neon']}') format('woff2'); font-weight: 400; }
+        @font-face { font-family: 'MonaspaceRadon'; src: url('${fontUris['radon']}') format('woff2'); font-weight: 400; }
+        @font-face { font-family: 'MonaspaceXenon'; src: url('${fontUris['xenon']}') format('woff2'); font-weight: 400; }
+
+        html, body {
+            height: 100%; width: 100%; margin: 0; padding: 0; overflow: hidden;
+        }
 
         body { 
             background: var(--rp-base); color: var(--rp-text); 
             font-family: ${fontFamily}; font-size: 13px; 
-            padding: 24px; box-sizing: border-box;
+            padding: 12px; box-sizing: border-box;
+            display: flex; flex-direction: column; gap: 12px;
         }
         
         .pane {
-            position: relative; border: 1px solid var(--rp-hl-med); border-radius: 12px;
-            background: rgba(31, 29, 46, 0.5); display: flex; flex-direction: column;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            position: relative; border: 1px solid var(--rp-hl-med);
+            background: var(--rp-base); display: flex; flex-direction: column;
+            min-height: 0 !important;
+        }
+        
+        .min-h-0 {
+            min-height: 0 !important;
         }
         
         .pane-label {
-            position: absolute; top: -10px; left: 16px; background: var(--rp-base);
-            padding: 0 10px; font-size: 10px; font-weight: 800; color: var(--rp-pine);
-            z-index: 10; text-transform: uppercase; letter-spacing: 1px; border: 1px solid var(--rp-hl-med); border-radius: 4px;
+            position: absolute; top: -9px; left: 12px; background: var(--rp-base);
+            padding: 0 6px; font-size: 10px; font-weight: 700; color: var(--rp-pine);
+            z-index: 10; text-transform: lowercase; letter-spacing: 0.5px; border: 1px solid var(--rp-hl-med);
         }
 
-        #results-pane { flex: 1; min-height: 0; margin-bottom: 24px; }
-        #search-pane { height: 72px; }
-        #info-pane { height: auto; min-height: 140px; margin-bottom: 24px; }
-        #preview-pane { flex: 1; min-height: 0; }
+        #results-pane { flex: 1; }
+        #search-pane { height: 48px; flex-shrink: 0; }
+        #info-pane { height: 240px; flex-shrink: 0; }
+        #preview-pane { flex: 1; }
 
         @media (max-width: 1000px) {
-            body { flex-direction: column !important; overflow-y: auto !important; gap: 32px !important; padding: 16px; }
-            #left-col, #right-col { flex: none !important; width: 100% !important; height: auto !important; }
-            #results-pane { height: 45vh; }
-            #preview-pane { height: 55vh; }
-            #search-pane { margin-top: 0; }
+            body { flex-direction: column !important; overflow-y: auto !important; height: auto !important; }
+            #results-pane, #info-pane, #preview-pane { height: 400px; flex: none; }
         }
 
         .empty-state {
@@ -283,80 +288,80 @@ export class ModalSearchPanel {
         }
         
         #search-input {
-            width: 100%; height: 100%; padding: 0 24px;
+            width: 100%; height: 100%; padding: 0 12px;
             background: transparent; border: none; outline: none;
-            color: var(--rp-text); font-size: 20px; font-family: inherit;
+            color: var(--rp-text); font-size: 16px; font-family: 'Monaspace Neon', monospace;
         }
 
         kbd {
-            background: var(--rp-overlay); color: var(--rp-foam); padding: 2px 5px;
-            border-radius: 4px; font-size: 9px; border: 1px solid var(--rp-hl-low);
+            color: var(--rp-iris); padding: 0 2px;
+            font-size: 10px;
         }
     </style>
 </head>
-<body class="h-screen overflow-hidden flex gap-8">
-    <div id="left-col" class="flex flex-col flex-[45] min-w-0 h-full">
-        <div id="results-pane" class="pane">
-            <span class="pane-label" id="results-label">${mode === 'grep' ? 'Live Grep' : 'File Finder'}</span>
-            <div id="results-list" class="flex-1 overflow-y-auto relative">
-                <div id="results-spacer" style="pointer-events: none;"></div>
-                <div id="results-content" class="w-full" style="position: absolute; top: 0; left: 0; right: 0; padding: 12px;"></div>
-                <div id="results-empty" class="p-3">
-                    <div class="empty-state">
-                        <i class="codicon codicon-search" style="font-size:32px"></i>
-                        <span>Type to start searching</span>
+<body class="vscode-dark">
+    <!-- Top area containing results and preview, must shrink to allow bottom bar -->
+    <div class="flex flex-1 gap-3 min-h-0">
+        <div id="left-col" class="flex flex-col flex-[4] min-w-0 min-h-0">
+            <div id="results-pane" class="pane flex-1">
+                <span class="pane-label" id="results-label">${mode === 'grep' ? 'live grep' : 'file finder'}</span>
+                <div id="results-list" class="flex-1 overflow-y-auto relative">
+                    <div id="results-spacer" style="pointer-events: none;"></div>
+                    <div id="results-content" class="w-full" style="position: absolute; top: 0; left: 0; right: 0; padding-top: 8px;"></div>
+                    <div id="results-empty" class="p-3">
+                        <div class="empty-state">
+                            <i class="codicon codicon-search" style="font-size:24px"></i>
+                            <span>Type to start searching</span>
+                        </div>
                     </div>
                 </div>
             </div>
         </div>
-        
-        <div id="search-pane" class="pane shrink-0">
-            <span class="pane-label">Prompt</span>
-            <div class="flex items-center h-full gap-4 px-4">
-                <input
-                    type="text" id="search-input"
-                    placeholder="${mode === 'grep' ? 'Search code…' : 'Find files…'}"
-                    autocomplete="off" spellcheck="false"
-                >
-                <div id="search-controls" class="flex gap-3 shrink-0 mr-4">
-                    <button id="btn-regex" class="segmented-btn px-4 py-2 rounded-lg border btn-inactive" title="Toggle Regex (Alt+R)">
-                        <i class="codicon codicon-regex"></i>
-                    </button>
-                    <span id="result-count" class="text-muted font-mono text-[11px] self-center ml-2 opacity-60"></span>
+
+        <div id="right-col" class="flex flex-col flex-[6] min-w-0 min-h-0">
+            <div id="info-pane" class="pane mb-3 shrink-0">
+                <span class="pane-label">file info</span>
+                <div id="info-content" class="p-4 font-mono text-[11px] leading-relaxed overflow-auto" style="color:var(--rp-subtle)">
+                    <div class="empty-state">
+                        <i class="codicon codicon-info" style="font-size:20px"></i>
+                        <span>Select a match to view details</span>
+                    </div>
+                </div>
+            </div>
+
+            <div id="preview-pane" class="pane flex-1 min-h-0">
+                <span class="pane-label" id="preview-label">preview</span>
+                <div id="preview-content" class="flex-1 overflow-auto" style="background:var(--rp-base)">
+                    <div class="empty-state">
+                        <i class="codicon codicon-go-to-file" style="font-size:24px"></i>
+                        <span>No preview available</span>
+                    </div>
                 </div>
             </div>
         </div>
     </div>
-
-    <div id="right-col" class="flex flex-col flex-[55] min-w-0 h-full">
-        <div id="info-pane" class="pane">
-            <span class="pane-label">File Details</span>
-            <div id="info-content" class="p-5 font-mono text-[11px] leading-relaxed overflow-auto" style="color:var(--rp-subtle)">
-                <div class="empty-state">
-                    <i class="codicon codicon-info" style="font-size:24px"></i>
-                    <span>Select a match to view details</span>
+    
+    <!-- Bottom fixed area -->
+    <div id="search-pane" class="pane shrink-0">
+        <span class="pane-label">prompt</span>
+        <div class="flex items-center h-full gap-2 px-3">
+            <i class="codicon codicon-search text-pine opacity-50"></i>
+            <input
+                type="text" id="search-input"
+                placeholder="${mode === 'grep' ? 'search code…' : 'find files…'}"
+                autocomplete="off" spellcheck="false"
+            >
+            <div id="search-controls" class="flex gap-4 shrink-0 items-center">
+                <button id="btn-regex" class="segmented-btn btn-inactive" title="Toggle Regex (Alt+R)">
+                    <i class="codicon codicon-regex"></i>
+                </button>
+                <span id="result-count" class="text-muted font-mono text-[11px] opacity-40"></span>
+                <div id="footer" class="flex gap-4 text-[10px] text-muted shrink-0 opacity-40 ml-4">
+                    <span><kbd>↑↓</kbd> browse</span>
+                    <span><kbd>↵</kbd> open</span>
+                    <span><kbd>Esc</kbd> quit</span>
                 </div>
             </div>
-        </div>
-
-        <div id="preview-pane" class="pane">
-            <span class="pane-label" id="preview-label">Preview</span>
-            <div id="preview-content" class="flex-1 overflow-auto rounded-b-xl" style="background:var(--rp-base)">
-                <div class="empty-state">
-                    <i class="codicon codicon-go-to-file" style="font-size:32px"></i>
-                    <span>No preview available</span>
-                </div>
-            </div>
-        </div>
-
-        <div id="footer" class="flex gap-5 px-3 py-4 text-[9px] text-muted shrink-0 uppercase tracking-[0.2em] opacity-40">
-            <span><kbd>↑↓</kbd> browse</span>
-            <span><kbd>↵</kbd> open</span>
-            <span><kbd>⌃↵</kbd> split</span>
-            <span><kbd>⌃T</kbd> tab</span>
-            <span><kbd>Tab</kbd> mode</span>
-            <span><kbd>Alt+R</kbd> regex</span>
-            <span><kbd>Esc</kbd> quit</span>
         </div>
     </div>
     <script nonce="${nonce}" src="${scriptUri}"></script>
