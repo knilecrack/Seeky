@@ -18,7 +18,7 @@
     const statusMode = /** @type {HTMLElement} */ (document.getElementById('status-mode'));
 
     // ── State ─────────────────────────────────────────────────────────────────
-    let currentMode = 'grep';
+    let currentMode = window.INITIAL_MODE || 'grep';
     let grepMode = 'plain';
     let selectedIndex = -1;
     let navItems = [];
@@ -42,7 +42,12 @@
         statusMode.style.color = 'var(--text-muted)';
     });
 
+    // Initialize UI based on starting mode
+    setMode(currentMode, window.INITIAL_QUERY || '');
+
+    // Ensure focus on load
     searchInput.focus();
+    setTimeout(() => searchInput.focus(), 50);
 
     window.addEventListener('mousedown', (e) => {
         if (e.target !== searchInput && !/** @type {HTMLElement} */(e.target).closest('.result-item')) {
@@ -69,6 +74,33 @@
         historyIndex = -1;
         resultCount.textContent = '...';
         vscode.postMessage({ command: 'search', query, mode: currentMode, grepMode });
+    }
+
+    function highlightRanges(text, ranges) {
+        if (!ranges || ranges.length === 0) return escHtml(text);
+        
+        let result = '';
+        let lastEnd = 0;
+        
+        for (const [start, end] of ranges) {
+            // Ensure bounds are within string length just in case
+            const s = Math.max(0, start);
+            const e = Math.min(text.length, end);
+            
+            if (s > lastEnd) {
+                result += escHtml(text.substring(lastEnd, s));
+            }
+            if (s < e) {
+                result += `<mark class="fuzzy-match">${escHtml(text.substring(s, e))}</mark>`;
+            }
+            lastEnd = Math.max(lastEnd, e);
+        }
+        
+        if (lastEnd < text.length) {
+            result += escHtml(text.substring(lastEnd));
+        }
+        
+        return result;
     }
 
     // ── Render Results ────────────────────────────────────────────────────────
@@ -135,19 +167,30 @@
             const { fname, dir } = splitPath(match.relativePath || '');
             
             let matchHtml = '';
+            let hlFname = escHtml(fname);
+
             if (currentMode === 'grep' || currentMode === 'symbols') {
-                const highlight = highlightText(match.text.trimStart(), searchInput.value);
+                // Determine highlight method based on whether matchRanges exist
+                let highlight;
+                if (match.matchRanges && match.matchRanges.length > 0) {
+                    highlight = highlightRanges(match.text.trimStart(), match.matchRanges);
+                } else {
+                    highlight = highlightText(match.text.trimStart(), searchInput.value);
+                }
+
                 matchHtml = `<div class="result-match-row">
                     <span class="result-line-num">${match.line}</span>
                     <span class="result-colon">:</span>
                     <span class="result-text truncate">${highlight}</span>
                 </div>`;
+            } else {
+                hlFname = highlightText(fname, searchInput.value);
             }
 
             return `<div class="result-item${sel}" data-index="${v.index}" style="height:${v.height}px">
                 <div class="result-file-row">
                     <i class="codicon codicon-file-code result-file-icon"></i>
-                    <span class="result-filename truncate">${escHtml(fname)}</span>
+                    <span class="result-filename truncate">${hlFname}</span>
                     <span class="result-path truncate">${escHtml(dir)}</span>
                 </div>
                 ${matchHtml}
@@ -286,7 +329,13 @@
                 e.preventDefault();
                 vscode.postMessage({ command: 'close' });
                 break;
-            // Mode switching via Tab is removed per spec, but could be added back
+            case 'Tab':
+                e.preventDefault();
+                {
+                    const nextIdx = (MODES.indexOf(currentMode) + 1) % MODES.length;
+                    setMode(MODES[nextIdx]);
+                }
+                break;
         }
     });
 

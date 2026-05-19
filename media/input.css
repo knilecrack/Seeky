@@ -38,8 +38,9 @@ body {
     background: var(--bg-float);
     border: 1px solid var(--border-outer);
     border-radius: 5px;
-    width: 100%;
-    max-width: 860px;
+    width: 95vw;
+    max-width: 1400px;
+    height: 90vh;
     display: flex;
     flex-direction: column;
     box-shadow: 0 10px 30px rgba(0,0,0,0.5);
@@ -54,6 +55,7 @@ body {
     align-items: center;
     padding: 0 12px;
     font-size: 10.5px;
+    flex-shrink: 0;
 }
 
 .bar-divider {
@@ -72,6 +74,7 @@ body {
     padding: 0 12px;
     font-size: 12.5px;
     border-bottom: 1px solid var(--border-inner);
+    flex-shrink: 0;
 }
 
 #search-input {
@@ -91,15 +94,17 @@ body {
 /* ── Main Content Area ──────────────────────────────────────────────────── */
 #content-area {
     display: flex;
-    height: 375px;
+    flex: 1;
+    min-height: 0;
 }
 
 #results-col {
-    width: 265px;
+    width: 350px;
     border-right: 1px solid var(--border-inner);
     display: flex;
     flex-direction: column;
     position: relative;
+    min-height: 0;
 }
 
 #preview-col {
