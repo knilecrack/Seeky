@@ -134,7 +134,7 @@ export class ModalSearchPanel {
         } else if (mode === 'files') {
             this.cancelSearch = searchFiles(query, this.workspacePath, storagePath, currentFile, onResult, onDone);
         } else if (mode === 'recent') {
-            const mru = this.context.globalState.get<string[]>('mruFiles', []);
+            const mru = this.context.workspaceState.get<string[]>('mruFiles', []);
             mru.forEach(file => {
                 if (file.toLowerCase().includes(query.toLowerCase())) {
                     items.push({ type: 'file', file, relativePath: vscode.workspace.asRelativePath(file) });

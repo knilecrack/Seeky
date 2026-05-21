@@ -63,7 +63,10 @@ async function getOrCreateFinder(basePath: string, storagePath?: string): Promis
 
     currentBasePath = normalizedBasePath;
     finderPromise = (async () => {
-        const { FileFinder: FF } = await dynamicImport('@ff-labs/fff-node');
+        const { pathToFileURL } = await import('node:url');
+        const modulePath = join(__dirname, '../node_modules/@ff-labs/fff-node/dist/src/index.js');
+        const moduleUrl = pathToFileURL(modulePath).toString();
+        const { FileFinder: FF } = await dynamicImport(moduleUrl);
 
         let frecencyDbPath: string | undefined;
         let historyDbPath: string | undefined;
