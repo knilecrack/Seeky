@@ -2,7 +2,7 @@
   "name": "seeky",
   "displayName": "Seeky",
   "description": "Telescope-inspired modal search using ripgrep/fff — live grep and file finder with preview",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "knilecrack",
   "engines": {
     "vscode": "^1.95.0"
