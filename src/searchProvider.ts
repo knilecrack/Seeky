@@ -1,5 +1,5 @@
 import { readFileSync, statSync, existsSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { execSync } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 import type { FileFinder, GrepMatch, FileItem } from '@ff-labs/fff-node';
@@ -42,42 +42,64 @@ let finderPromise: Promise<FileFinder | null> | null = null;
 let currentBasePath: string | null = null;
 
 async function getOrCreateFinder(basePath: string, storagePath?: string): Promise<FileFinder | null> {
-    if (finderInstance && currentBasePath === basePath) {
+    // Normalize drive letter casing on Windows so Neovim (J:\) and VS Code (j:\) share the same DB namespace.
+    const normalizedBasePath = process.platform === 'win32' && /^[a-z]:/i.test(basePath) 
+        ? basePath.charAt(0).toUpperCase() + basePath.slice(1) 
+        : basePath;
+
+    if (finderInstance && currentBasePath === normalizedBasePath) {
         return finderInstance;
     }
 
-    if (finderPromise && currentBasePath === basePath) {
+    if (finderPromise && currentBasePath === normalizedBasePath) {
         return finderPromise;
     }
 
-    if (currentBasePath !== basePath) {
+    if (currentBasePath !== normalizedBasePath) {
         finderInstance?.destroy();
         finderInstance = null;
         finderPromise = null;
     }
 
-    currentBasePath = basePath;
+    currentBasePath = normalizedBasePath;
     finderPromise = (async () => {
         const { FileFinder: FF } = await dynamicImport('@ff-labs/fff-node');
         
         let frecencyDbPath;
         let historyDbPath;
         
-        if (storagePath) {
-            if (!existsSync(storagePath)) {
-                mkdirSync(storagePath, { recursive: true });
-            }
+        // Sync with Neovim fff.nvim databases
+        const isWin = process.platform === 'win32';
+        const localAppData = process.env['LOCALAPPDATA'];
+        const home = process.env['HOME'] || process.env['USERPROFILE'] || '';
+        
+        if (isWin && localAppData) {
+            frecencyDbPath = join(localAppData, 'nvim-data', 'fff_nvim', 'frecency.db');
+            historyDbPath = join(localAppData, 'nvim-data', 'fff_queries', 'history.db');
+        } else if (!isWin && home) {
+            frecencyDbPath = join(home, '.cache', 'nvim', 'fff_nvim', 'frecency.db');
+            historyDbPath = join(home, '.local', 'share', 'nvim', 'fff_queries', 'history.db');
+        } else if (storagePath) {
+            // Fallback to extension storage
             frecencyDbPath = join(storagePath, 'frecency.db');
             historyDbPath = join(storagePath, 'history.db');
         }
 
-        const result = FF.create({ 
-            basePath, 
-            aiMode: false,
-            frecencyDbPath,
-            historyDbPath
-        });
-        
+        const ensureDbDir = (dbPath?: string) => {
+            if (!dbPath) return;
+            const dir = dirname(dbPath);
+            if (!existsSync(dir)) {
+                mkdirSync(dir, { recursive: true });
+            }
+        };
+
+        ensureDbDir(frecencyDbPath);
+        ensureDbDir(historyDbPath);
+
+        const options: any = { basePath: normalizedBasePath, aiMode: false };
+        if (frecencyDbPath) options.frecencyDbPath = frecencyDbPath;
+        if (historyDbPath) options.historyDbPath = historyDbPath;
+        const result = FF.create(options);
         if (!result.ok) {
             console.error('[Seeky] FFF init failed:', result.error);
             return null;
@@ -100,8 +122,9 @@ export function destroyFff(): void {
 export function searchGrep(
     query: string,
     workspacePath: string,
-    grepMode: 'plain' | 'regex',
+    grepMode: 'plain' | 'regex' | 'fuzzy',
     storagePath: string | undefined,
+    currentFile: string | undefined,
     onResult: (result: GrepResult) => void,
     onDone: (cancelled: boolean, duration?: number) => void
 ): () => void {
@@ -116,6 +139,8 @@ export function searchGrep(
             mode: grepMode,
             smartCase: true,
             pageSize: MAX_RESULTS,
+            maxMatchesPerFile: 100,
+            timeBudgetMs: 150,
         });
         const duration = performance.now() - start;
 
@@ -144,6 +169,7 @@ export function searchFiles(
     query: string,
     workspacePath: string,
     storagePath: string | undefined,
+    currentFile: string | undefined,
     onResult: (result: FileResult) => void,
     onDone: (cancelled: boolean, duration?: number) => void
 ): () => void {
@@ -154,7 +180,10 @@ export function searchFiles(
         if (cancelled || !finder) { onDone(cancelled); return; }
 
         const start = performance.now();
-        const result = finder.fileSearch(query, { pageSize: MAX_RESULTS });
+        const result = finder.fileSearch(query, { 
+            pageSize: MAX_RESULTS,
+            ...(currentFile ? { currentFile } : {})
+        });
         const duration = performance.now() - start;
 
         if (!result.ok) { onDone(false, duration); return; }

@@ -1,6 +1,6 @@
 const esbuild = require('esbuild');
-const { execSync, spawn } = require('child_process');
-const fs = require('fs');
+const { execSync, spawn } = require('node:child_process');
+const fs = require('node:fs');
 const watch = process.argv.includes('--watch');
 
 const twCmd = `npx @tailwindcss/cli -i media/input.css -o media/style.css`;

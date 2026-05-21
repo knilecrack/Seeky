@@ -22,7 +22,7 @@
   "contributes": {
     "commands": [
       {
-        "command": "seeky.liveGrep",
+        "command": "seeky.grep",
         "title": "Live Grep",
         "category": "Seeky"
       },
@@ -54,7 +54,7 @@
     ],
     "keybindings": [
       {
-        "command": "seeky.liveGrep",
+        "command": "seeky.grep",
         "key": "ctrl+shift+g",
         "mac": "cmd+shift+g",
         "when": "!terminalFocus"
@@ -100,10 +100,12 @@
     "vscode:prepublish": "npm run build",
     "build": "node esbuild.js",
     "watch": "node esbuild.js --watch",
+    "lint": "biome lint .",
     "compile": "tsc -p ./ --noEmit",
     "package": "vsce package"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.4.15",
     "@fontsource/monaspace-argon": "^5.2.5",
     "@fontsource/monaspace-krypton": "^5.2.5",
     "@fontsource/monaspace-neon": "^5.2.5",
