@@ -2,6 +2,9 @@
 .vscode-test/**
 src/**
 node_modules/**
+!node_modules/@ff-labs/**
+!node_modules/ffi-rs/**
+!node_modules/@yuuang/**
 .gitignore
 .eslintrc.json
 esbuild.js

@@ -5,7 +5,10 @@
   "version": "0.0.1",
   "publisher": "knilecrack",
   "engines": {
-    "vscode": "^1.120.0"
+    "vscode": "^1.95.0"
+  },
+  "repository": {
+    "url": "https://github.com/knilecvrack/Seeky"
   },
   "categories": [
     "Other"
@@ -116,7 +119,7 @@
     "@types/vscode": "^1.95.0",
     "@vscode/codicons": "^0.0.45",
     "@vscode/vsce": "^3.9.1",
-    "esbuild": "^0.20.2",
+    "esbuild": "^0.28.0",
     "tailwindcss": "^4.3.0",
     "typescript": "^6.0.3"
   },

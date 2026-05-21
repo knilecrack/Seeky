@@ -9,9 +9,9 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.window.onDidChangeActiveTextEditor(editor => {
             if (editor && editor.document.uri.scheme === 'file') {
                 const fsPath = editor.document.uri.fsPath;
-                const currentMru = context.globalState.get<string[]>('mruFiles', []);
+                const currentMru = context.workspaceState.get<string[]>('mruFiles', []);
                 const newMru = [fsPath, ...currentMru.filter(p => p !== fsPath)].slice(0, 100);
-                context.globalState.update('mruFiles', newMru);
+                context.workspaceState.update('mruFiles', newMru);
             }
         })
     );
