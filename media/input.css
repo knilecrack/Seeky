@@ -128,7 +128,6 @@ kbd {
     border-radius: 4px;
     box-shadow: 0 1px 2px rgba(0,0,0,0.1);
     border: 1px solid var(--border-outer);
-    transition: all 0.22s cubic-bezier(0.25, 1, 0.5, 1);
     pointer-events: none;
     z-index: 1;
 }
@@ -189,15 +188,6 @@ kbd {
 
 #search-area:focus-within {
     box-shadow: inset 0 -2px 0 var(--accent);
-}
-
-#search-area span.text-accent {
-    animation: text-pulse 2s infinite ease-in-out;
-}
-
-@keyframes text-pulse {
-    0%, 100% { opacity: 0.6; text-shadow: 0 0 2px transparent; }
-    50% { opacity: 1; text-shadow: 0 0 8px var(--accent); }
 }
 
 #search-input {
@@ -273,7 +263,6 @@ kbd {
     justify-content: center;
     cursor: pointer;
     border-left: 3px solid transparent;
-    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .result-item:hover {
@@ -461,7 +450,6 @@ mark.fuzzy-match {
     align-items: center;
     box-shadow: 0 8px 30px rgba(0,0,0,0.15);
     border-top: 3px solid var(--accent);
-    animation: float-in 0.5s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .watermark-card i.codicon-telescope {
@@ -484,11 +472,6 @@ mark.fuzzy-match {
     grid-template-columns: auto auto;
     gap: 8px 16px;
     font-size: 11px;
-}
-
-@keyframes float-in {
-    from { opacity: 0; transform: translateY(12px) scale(0.98); }
-    to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 /* Syntax Highlighting */

@@ -119,8 +119,9 @@ export class ModalSearchPanel {
 
         const start = performance.now();
         const onDone = (cancelled: boolean, duration?: number) => {
+            if (cancelled) return;
             const finalDuration = duration ?? (performance.now() - start);
-            this.panel.webview.postMessage({ command: 'results', items, done: true, capped: cancelled, duration: finalDuration });
+            this.panel.webview.postMessage({ command: 'results', items, done: true, capped: false, duration: finalDuration });
         };
 
         const items: SearchResult[] = [];
@@ -271,6 +272,7 @@ export class ModalSearchPanel {
         html, body {
             height: 100%; width: 100%; margin: 0; padding: 0; overflow: hidden;
             background: var(--bg-outer) !important;
+            font-family: ${fontFamily};
         }
     </style>
 </head>
@@ -358,7 +360,7 @@ export class ModalSearchPanel {
                 <div id="preview-content" class="flex-1 overflow-auto p-2 relative">
                     <div id="watermark-preview">
                         <div class="watermark-card">
-                            <i class="codicon codicon-telescope animate-pulse"></i>
+                            <i class="codicon codicon-telescope"></i>
                             <h2>Seeky Modal Search</h2>
                             <div class="watermark-shortcuts">
                                 <span><kbd>Tab</kbd> Cycle Modes</span>

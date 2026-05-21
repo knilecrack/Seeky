@@ -32,7 +32,7 @@ export interface SymbolResult {
 
 export type SearchResult = GrepResult | FileResult | SymbolResult;
 
-const MAX_RESULTS = 200;
+const MAX_RESULTS = 100;
 
 // Bypass esbuild's CJS transform so the ESM package can be imported at runtime
 const dynamicImport = new Function('m', 'return import(m)') as (m: string) => Promise<{ FileFinder: typeof FileFinder }>;
@@ -43,8 +43,8 @@ let currentBasePath: string | null = null;
 
 async function getOrCreateFinder(basePath: string, storagePath?: string): Promise<FileFinder | null> {
     // Normalize drive letter casing on Windows so Neovim (J:\) and VS Code (j:\) share the same DB namespace.
-    const normalizedBasePath = process.platform === 'win32' && /^[a-z]:/i.test(basePath) 
-        ? basePath.charAt(0).toUpperCase() + basePath.slice(1) 
+    const normalizedBasePath = process.platform === 'win32' && /^[a-z]:/i.test(basePath)
+        ? basePath.charAt(0).toUpperCase() + basePath.slice(1)
         : basePath;
 
     if (finderInstance && currentBasePath === normalizedBasePath) {
@@ -64,15 +64,15 @@ async function getOrCreateFinder(basePath: string, storagePath?: string): Promis
     currentBasePath = normalizedBasePath;
     finderPromise = (async () => {
         const { FileFinder: FF } = await dynamicImport('@ff-labs/fff-node');
-        
-        let frecencyDbPath;
-        let historyDbPath;
-        
+
+        let frecencyDbPath: string | undefined;
+        let historyDbPath: string | undefined;
+
         // Sync with Neovim fff.nvim databases
         const isWin = process.platform === 'win32';
         const localAppData = process.env['LOCALAPPDATA'];
         const home = process.env['HOME'] || process.env['USERPROFILE'] || '';
-        
+
         if (isWin && localAppData) {
             frecencyDbPath = join(localAppData, 'nvim-data', 'fff_nvim', 'frecency.db');
             historyDbPath = join(localAppData, 'nvim-data', 'fff_queries', 'history.db');
@@ -94,9 +94,7 @@ async function getOrCreateFinder(basePath: string, storagePath?: string): Promis
         };
 
         ensureDbDir(frecencyDbPath);
-        ensureDbDir(historyDbPath);
-
-        const options: any = { basePath: normalizedBasePath, aiMode: false };
+        const options: { basePath: string; aiMode: boolean; frecencyDbPath?: string; historyDbPath?: string } = { basePath: normalizedBasePath, aiMode: false };
         if (frecencyDbPath) options.frecencyDbPath = frecencyDbPath;
         if (historyDbPath) options.historyDbPath = historyDbPath;
         const result = FF.create(options);
@@ -124,7 +122,7 @@ export function searchGrep(
     workspacePath: string,
     grepMode: 'plain' | 'regex' | 'fuzzy',
     storagePath: string | undefined,
-    currentFile: string | undefined,
+    _currentFile: string | undefined,
     onResult: (result: GrepResult) => void,
     onDone: (cancelled: boolean, duration?: number) => void
 ): () => void {
@@ -140,7 +138,7 @@ export function searchGrep(
             smartCase: true,
             pageSize: MAX_RESULTS,
             maxMatchesPerFile: 100,
-            timeBudgetMs: 150,
+            timeBudgetMs: 30,
         });
         const duration = performance.now() - start;
 
@@ -180,7 +178,7 @@ export function searchFiles(
         if (cancelled || !finder) { onDone(cancelled); return; }
 
         const start = performance.now();
-        const result = finder.fileSearch(query, { 
+        const result = finder.fileSearch(query, {
             pageSize: MAX_RESULTS,
             ...(currentFile ? { currentFile } : {})
         });
@@ -202,10 +200,10 @@ export function searchFiles(
 
 export function getGitStatus(filePath: string, workspacePath: string): string {
     try {
-        const output = execSync(`git status --porcelain "${filePath}"`, { 
-            cwd: workspacePath, 
+        const output = execSync(`git status --porcelain "${filePath}"`, {
+            cwd: workspacePath,
             encoding: 'utf-8',
-            stdio: ['ignore', 'pipe', 'ignore'] 
+            stdio: ['ignore', 'pipe', 'ignore']
         }).trim();
         if (!output) return 'unmodified';
         const status = output.slice(0, 2).trim();
@@ -231,8 +229,8 @@ export function readFilePreview(
         const lines = raw.split('\n');
         const start = Math.max(0, targetLine - contextLines - 1);
         const end = Math.min(lines.length, targetLine + contextLines);
-        return { 
-            content: lines.slice(start, end).join('\n'), 
+        return {
+            content: lines.slice(start, end).join('\n'),
             startLine: start + 1,
             stats: { size: stats.size, mtime: stats.mtimeMs, gitStatus }
         };
