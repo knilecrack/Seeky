@@ -1,25 +1,48 @@
 /* Tailwind v4 — utilities only (no preflight reset) */
 @import "tailwindcss/utilities";
 
-:root {
-    --bg-outer: #13141c;
-    --bg-float: #1f2335;
-    --bg-deep: #16161e;
-    --border-inner: #3b4261;
-    --border-outer: #565f89;
-    --text-muted: #4a5178;
-    --text-primary: #c0caf5;
-    --accent: #7aa2f7;
-    --match-fg: #e0af68;
-    --match-bg: #1a3028;
-    --match-line-fg: #9ece6a;
-    --sel-bg: #2d3f76;
-    --sel-border: #7aa2f7;
+:root, body.vscode-dark, body.vscode-high-contrast {
+    /* Tokyo Night Dark fallbacks */
+    --bg-outer: var(--vscode-editor-background, #1a1b26);
+    --bg-float: var(--vscode-editorWidget-background, #24283b);
+    --bg-deep: var(--vscode-editor-background, #1a1b26);
+    --border-inner: var(--vscode-widget-border, #16161e);
+    --border-outer: var(--vscode-focusBorder, #1d202f);
+    --text-muted: var(--vscode-descriptionForeground, #565f89);
+    --text-primary: var(--vscode-editor-foreground, #c0caf5);
+    --accent: var(--vscode-textLink-foreground, #7aa2f7);
+    --match-fg: var(--vscode-editor-findMatchHighlightForeground, #e0af68);
+    --match-bg: var(--vscode-editor-findMatchHighlightBackground, rgba(122, 162, 247, 0.4));
+    --match-line-fg: var(--vscode-editor-findMatchHighlightForeground, #7aa2f7);
+    --sel-bg: var(--vscode-list-activeSelectionBackground, rgba(41, 46, 66, 0.6));
+    --sel-border: var(--vscode-list-activeSelectionForeground, #f7768e);
     
     --zig-kw: #bb9af7;
     --zig-str: #9ece6a;
-    --zig-com: #4a5178;
+    --zig-com: #565f89;
     --zig-num: #ff9e64;
+}
+
+body.vscode-light {
+    /* Rosé Pine Dawn fallback with VS Code native integration */
+    --bg-outer: var(--vscode-editor-background, #faf4ed);
+    --bg-float: var(--vscode-editorWidget-background, #fffaf3);
+    --bg-deep: var(--vscode-editor-background, #faf4ed);
+    --border-inner: var(--vscode-widget-border, #f2e9de);
+    --border-outer: var(--vscode-focusBorder, #dfdad9);
+    --text-muted: var(--vscode-descriptionForeground, #9893a5);
+    --text-primary: var(--vscode-editor-foreground, #575279);
+    --accent: var(--vscode-textLink-foreground, #907aa9);
+    --match-fg: var(--vscode-editor-findMatchHighlightForeground, #ea9d34);
+    --match-bg: var(--vscode-editor-findMatchHighlightBackground, rgba(40, 105, 131, 0.3));
+    --match-line-fg: var(--vscode-editor-findMatchHighlightForeground, #286983);
+    --sel-bg: var(--vscode-list-activeSelectionBackground, rgba(223, 218, 217, 0.6));
+    --sel-border: var(--vscode-list-activeSelectionForeground, #b75566);
+    
+    --zig-kw: #907aa9;
+    --zig-str: #ea9d34;
+    --zig-com: #9893a5;
+    --zig-num: #d7827e;
 }
 
 body {
@@ -35,27 +58,112 @@ body {
 }
 
 #telescope-container {
-    background: var(--bg-float);
-    border: 1px solid var(--border-outer);
-    border-radius: 5px;
-    width: 80vw;
-    max-width: 1400px;
-    height: 80vh;
+    background: var(--bg-outer);
+    width: 100vw;
+    height: 100vh;
+    max-width: none;
+    border: none;
+    border-radius: 0;
     display: flex;
     flex-direction: column;
-    box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+    box-shadow: none;
     overflow: hidden;
 }
 
 /* ── Title Bar & Status Bar ─────────────────────────────────────────────── */
 .bar {
     background: var(--bg-deep);
-    height: 28px;
+    height: 32px;
     display: flex;
     align-items: center;
     padding: 0 12px;
     font-size: 10.5px;
     flex-shrink: 0;
+}
+
+kbd {
+    background: linear-gradient(180deg, var(--bg-float) 0%, var(--border-inner) 100%) !important;
+    border: 1px solid var(--border-outer) !important;
+    border-bottom: 3px solid var(--border-outer) !important;
+    border-radius: 5px !important;
+    padding: 2px 6px !important;
+    font-size: 9px !important;
+    font-family: inherit !important;
+    color: var(--text-primary) !important;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.12), inset 0 1px 0 rgba(255,255,255,0.05) !important;
+    text-shadow: 0 1px 0 rgba(0,0,0,0.2) !important;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+    margin: 0 2px;
+}
+
+.window-accent-line {
+    height: 2px;
+    width: 100%;
+    background: linear-gradient(90deg, var(--accent) 0%, var(--sel-border) 50%, var(--match-fg) 100%);
+    flex-shrink: 0;
+}
+
+#mode-tabs-container {
+    position: relative;
+    display: flex;
+    align-items: center;
+    height: 24px;
+    background: var(--border-inner);
+    border-radius: 6px;
+    padding: 2px;
+    gap: 2px;
+    margin-left: 8px;
+}
+
+.tab-slider {
+    position: absolute;
+    top: 2px;
+    bottom: 2px;
+    left: 2px;
+    width: 0px;
+    background: var(--bg-outer);
+    border-radius: 4px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+    border: 1px solid var(--border-outer);
+    transition: all 0.22s cubic-bezier(0.25, 1, 0.5, 1);
+    pointer-events: none;
+    z-index: 1;
+}
+
+.mode-tab {
+    position: relative;
+    z-index: 2;
+    background: transparent;
+    border: none;
+    outline: none;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 10.5px;
+    font-weight: 500;
+    color: var(--text-muted);
+    padding: 0 8px;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    border-radius: 4px;
+    transition: color 0.2s ease;
+}
+
+.mode-tab:hover {
+    color: var(--text-primary);
+}
+
+.mode-tab.active {
+    color: var(--accent);
+    font-weight: bold;
+}
+
+.mode-tab i {
+    font-size: 11px !important;
 }
 
 .bar-divider {
@@ -75,6 +183,21 @@ body {
     font-size: 12.5px;
     border-bottom: 1px solid var(--border-inner);
     flex-shrink: 0;
+    background: var(--bg-outer);
+    transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+#search-area:focus-within {
+    box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+#search-area span.text-accent {
+    animation: text-pulse 2s infinite ease-in-out;
+}
+
+@keyframes text-pulse {
+    0%, 100% { opacity: 0.6; text-shadow: 0 0 2px transparent; }
+    50% { opacity: 1; text-shadow: 0 0 8px var(--accent); }
 }
 
 #search-input {
@@ -91,6 +214,28 @@ body {
     color: var(--text-muted);
 }
 
+#regex-toggle {
+    cursor: pointer;
+    color: var(--text-muted);
+    padding: 4px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-right: 6px;
+    transition: color 0.15s, background 0.15s;
+}
+
+#regex-toggle:hover {
+    background: var(--border-inner);
+    color: var(--text-primary);
+}
+
+#regex-toggle.active {
+    color: var(--accent);
+    background: var(--sel-bg);
+}
+
 /* ── Main Content Area ──────────────────────────────────────────────────── */
 #content-area {
     display: flex;
@@ -99,7 +244,9 @@ body {
 }
 
 #results-col {
-    width: 350px;
+    width: 35%;
+    min-width: 300px;
+    max-width: 500px;
     border-right: 1px solid var(--border-inner);
     display: flex;
     flex-direction: column;
@@ -119,20 +266,26 @@ body {
 .result-item {
     height: 42px;
     padding: 0 12px;
+    margin: 3px 8px;
+    border-radius: 6px;
     display: flex;
     flex-direction: column;
     justify-content: center;
     cursor: pointer;
-    border-left: 2px solid transparent;
+    border-left: 3px solid transparent;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .result-item:hover {
-    background: #1e2235;
+    background: var(--border-inner);
+    transform: translateX(2px);
+    padding-left: 14px;
 }
 
 .result-item.selected {
     background: var(--sel-bg);
     border-left-color: var(--sel-border);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
 }
 
 .result-file-row {
@@ -146,6 +299,9 @@ body {
 .result-file-icon {
     color: var(--text-muted);
     font-size: 13px !important;
+    width: 14px;
+    height: 14px;
+    object-fit: contain;
 }
 
 .result-filename {
@@ -181,19 +337,76 @@ body {
 }
 
 mark.fuzzy-match {
-    background: transparent;
+    background: var(--match-bg);
     color: var(--match-fg);
     font-weight: 600;
+    border-radius: 3px;
+    padding: 0 1px;
 }
 
 /* ── Preview Pane ───────────────────────────────────────────────────────── */
 #preview-header {
-    height: 24px;
+    height: 28px;
     display: flex;
     align-items: center;
+    justify-content: space-between;
     padding: 0 12px;
     font-size: 10.5px;
     border-bottom: 1px solid var(--border-inner);
+    background: var(--bg-deep);
+}
+
+#preview-metadata-ribbon {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.meta-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.2px;
+}
+
+.meta-badge i {
+    font-size: 10px !important;
+}
+
+/* Git Status Colors */
+.git-added {
+    background: rgba(46, 160, 67, 0.15);
+    color: #3fb950;
+    border: 1px solid rgba(46, 160, 67, 0.25);
+}
+
+.git-modified {
+    background: rgba(210, 153, 34, 0.15);
+    color: #d29922;
+    border: 1px solid rgba(210, 153, 34, 0.25);
+}
+
+.git-untracked {
+    background: rgba(56, 139, 253, 0.15);
+    color: #58a6ff;
+    border: 1px solid rgba(56, 139, 253, 0.25);
+}
+
+/* Size & Timestamp Badges */
+.file-size {
+    background: var(--border-inner);
+    color: var(--text-primary);
+    border: 1px solid var(--border-outer);
+}
+
+.time-stamp {
+    background: var(--border-inner);
+    color: var(--text-muted);
+    border: 1px solid var(--border-outer);
 }
 
 .preview-line {
@@ -225,7 +438,57 @@ mark.fuzzy-match {
 }
 
 .preview-line.matched .preview-line-text {
-    color: var(--match-fg);
+    color: var(--text-primary);
+}
+
+#watermark-preview {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    width: 100%;
+    background: var(--bg-deep);
+}
+
+.watermark-card {
+    background: var(--bg-float);
+    border: 1px solid var(--border-inner);
+    border-radius: 12px;
+    padding: 24px;
+    max-width: 320px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.15);
+    border-top: 3px solid var(--accent);
+    animation: float-in 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.watermark-card i.codicon-telescope {
+    font-size: 48px !important;
+    margin-bottom: 12px;
+    color: var(--accent);
+    opacity: 0.95;
+}
+
+.watermark-card h2 {
+    font-size: 14px;
+    font-weight: bold;
+    margin: 0 0 16px 0;
+    color: var(--text-primary);
+    letter-spacing: 0.5px;
+}
+
+.watermark-shortcuts {
+    display: grid;
+    grid-template-columns: auto auto;
+    gap: 8px 16px;
+    font-size: 11px;
+}
+
+@keyframes float-in {
+    from { opacity: 0; transform: translateY(12px) scale(0.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 /* Syntax Highlighting */

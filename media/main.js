@@ -3,6 +3,10 @@
     // @ts-expect-error acquireVsCodeApi is provided by the VS Code webview runtime
     const vscode = acquireVsCodeApi();
 
+    window.addEventListener('error', (e) => {
+        document.body.innerHTML += `<div style="position:absolute;top:0;left:0;z-index:9999;background:red;color:white;padding:10px;">Error: ${e.message} <br> ${e.filename}:${e.lineno}</div>`;
+    });
+
     // ── DOM refs ──────────────────────────────────────────────────────────────
     const searchInput = /** @type {HTMLInputElement} */ (document.getElementById('search-input'));
     const resultsList = /** @type {HTMLElement} */ (document.getElementById('results-list'));
@@ -10,6 +14,7 @@
     const resultsContent = /** @type {HTMLElement} */ (document.getElementById('results-content'));
     const titleLabel = /** @type {HTMLElement} */ (document.getElementById('title-label'));
     const resultCount = /** @type {HTMLElement} */ (document.getElementById('result-count'));
+    const regexToggle = /** @type {HTMLElement} */ (document.getElementById('regex-toggle'));
     
     const previewFilename = /** @type {HTMLElement} */ (document.getElementById('preview-filename'));
     const previewPath = /** @type {HTMLElement} */ (document.getElementById('preview-path'));
@@ -19,7 +24,7 @@
 
     // ── State ─────────────────────────────────────────────────────────────────
     let currentMode = window.INITIAL_MODE || 'grep';
-    let grepMode = 'plain';
+    let grepMode = 'fuzzy';
     let selectedIndex = -1;
     let navItems = [];
     let virtualItems = [];
@@ -28,8 +33,40 @@
     const history = [];
     let historyIndex = -1;
 
+    if (regexToggle) {
+        regexToggle.addEventListener('click', () => {
+            if (currentMode !== 'grep') return;
+            const modes = ['fuzzy', 'plain', 'regex'];
+            grepMode = modes[(modes.indexOf(grepMode) + 1) % modes.length];
+            updateRegexToggleUI();
+            triggerSearch();
+            searchInput.focus();
+        });
+    }
+
+    function updateRegexToggleUI() {
+        if (!regexToggle) return;
+        const icon = regexToggle.querySelector('i');
+        if (!icon) return;
+
+        if (grepMode === 'regex') {
+            regexToggle.classList.add('active');
+            regexToggle.title = 'Regex Mode (Alt+Shift+R)';
+            icon.className = 'codicon codicon-regex';
+        } else if (grepMode === 'fuzzy') {
+            regexToggle.classList.add('active');
+            regexToggle.title = 'Fuzzy Mode (Alt+Shift+R)';
+            icon.className = 'codicon codicon-sparkle';
+        } else {
+            regexToggle.classList.remove('active');
+            regexToggle.title = 'Plain Text Mode (Alt+Shift+R)';
+            icon.className = 'codicon codicon-case-sensitive';
+        }
+    }
+    updateRegexToggleUI();
+
     const RESULT_ITEM_HEIGHT = 42;
-    const MODES = ['grep', 'files', 'recent', 'buffers', 'symbols'];
+    const MODES = ['grep', 'files', 'recent', 'buffers', 'symbols', 'workspace-symbols'];
 
     // ── Mode / Focus Management ───────────────────────────────────────────────
     searchInput.addEventListener('focus', () => {
@@ -42,16 +79,56 @@
         statusMode.style.color = 'var(--text-muted)';
     });
 
+    // Setup mode tabs click events
+    document.querySelectorAll('.mode-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            const mode = tab.getAttribute('data-mode');
+            if (mode) {
+                setMode(mode);
+                searchInput.focus();
+            }
+        });
+    });
+
     // Initialize UI based on starting mode
-    setMode(currentMode, window.INITIAL_QUERY || '');
+    setMode(currentMode);
+    if (window.INITIAL_QUERY) {
+        searchInput.value = window.INITIAL_QUERY;
+        triggerSearch();
+    }
 
     // Ensure focus on load
     searchInput.focus();
-    setTimeout(() => searchInput.focus(), 50);
+    setTimeout(() => {
+        searchInput.focus();
+        // Force slide active tab geometry on load once rendered
+        const activeTab = document.querySelector(`.mode-tab[data-mode="${currentMode}"]`);
+        if (activeTab) {
+            const container = document.getElementById('mode-tabs-container');
+            const slider = container ? container.querySelector('.tab-slider') : null;
+            if (slider) {
+                slider.style.left = `${activeTab.offsetLeft}px`;
+                slider.style.width = `${activeTab.offsetWidth}px`;
+            }
+        }
+    }, 50);
 
     window.addEventListener('mousedown', (e) => {
-        if (e.target !== searchInput && !/** @type {HTMLElement} */(e.target).closest('.result-item')) {
+        if (e.target !== searchInput && !/** @type {HTMLElement} */(e.target).closest('.result-item') && !/** @type {HTMLElement} */(e.target).closest('.mode-tab')) {
             setTimeout(() => searchInput.focus(), 10);
+        }
+    });
+
+    // Re-align slider on window resize
+    window.addEventListener('resize', () => {
+        const activeTab = document.querySelector(`.mode-tab[data-mode="${currentMode}"]`);
+        if (activeTab) {
+            const container = document.getElementById('mode-tabs-container');
+            const slider = container ? container.querySelector('.tab-slider') : null;
+            if (slider) {
+                slider.style.left = `${activeTab.offsetLeft}px`;
+                slider.style.width = `${activeTab.offsetWidth}px`;
+            }
         }
     });
 
@@ -63,7 +140,7 @@
 
     function triggerSearch() {
         const query = searchInput.value;
-        if (!query.trim() && !['recent', 'buffers', 'symbols'].includes(currentMode)) {
+        if (!query.trim() && !['recent', 'buffers', 'symbols', 'workspace-symbols'].includes(currentMode)) {
             renderResults([]);
             return;
         }
@@ -167,15 +244,16 @@
             const { fname, dir } = splitPath(match.relativePath || '');
             
             let matchHtml = '';
-            let hlFname = escHtml(fname);
+            let hlFname = escHtml(fname || '');
 
-            if (currentMode === 'grep' || currentMode === 'symbols') {
+            if (currentMode === 'grep' || currentMode === 'symbols' || currentMode === 'workspace-symbols') {
                 // Determine highlight method based on whether matchRanges exist
                 let highlight;
+                const matchText = match.text || '';
                 if (match.matchRanges && match.matchRanges.length > 0) {
-                    highlight = highlightRanges(match.text.trimStart(), match.matchRanges);
+                    highlight = highlightRanges(matchText.trimStart(), match.matchRanges);
                 } else {
-                    highlight = highlightText(match.text.trimStart(), searchInput.value);
+                    highlight = highlightText(matchText.trimStart(), searchInput.value);
                 }
 
                 matchHtml = `<div class="result-match-row">
@@ -184,12 +262,22 @@
                     <span class="result-text truncate">${highlight}</span>
                 </div>`;
             } else {
-                hlFname = highlightText(fname, searchInput.value);
+                hlFname = highlightText(fname || '', searchInput.value);
+            }
+
+            let iconHtml = '';
+            if ((currentMode === 'symbols' || currentMode === 'workspace-symbols') && match.kind) {
+                const iconClass = getSymbolIcon(match.kind);
+                iconHtml = `<i class="codicon ${iconClass} result-file-icon"></i>`;
+            } else {
+                const iconPathRaw = window.getRosePineIcon ? window.getRosePineIcon(fname || '') : 'icons/file.svg';
+                const iconPath = iconPathRaw.replace(/^(\.\/|\/)/, '');
+                iconHtml = `<img src="${window.MEDIA_URI}/${iconPath}" class="result-file-icon" />`;
             }
 
             return `<div class="result-item${sel}" data-index="${v.index}" style="height:${v.height}px">
                 <div class="result-file-row">
-                    <i class="codicon codicon-file-code result-file-icon"></i>
+                    ${iconHtml}
                     <span class="result-filename truncate">${hlFname}</span>
                     <span class="result-path truncate">${escHtml(dir)}</span>
                 </div>
@@ -235,9 +323,28 @@
     }
 
     function clearPreview() {
+        const watermarkHtml = `<div id="watermark-preview">
+            <div class="watermark-card">
+                <i class="codicon codicon-telescope animate-pulse"></i>
+                <h2>Seeky Modal Search</h2>
+                <div class="watermark-shortcuts">
+                    <span><kbd>Tab</kbd> Cycle Modes</span>
+                    <span><kbd>Alt+Shift+R</kbd> Cycle Match Mode</span>
+                    <span><kbd>↑</kbd> / <kbd>↓</kbd> Navigate</span>
+                    <span><kbd>Enter</kbd> Open Result</span>
+                </div>
+            </div>
+        </div>`;
         previewFilename.textContent = '';
         previewPath.textContent = '';
-        previewContent.innerHTML = '';
+        previewContent.innerHTML = watermarkHtml;
+
+        const badgeGit = document.getElementById('badge-git');
+        const badgeSize = document.getElementById('badge-size');
+        const badgeMtime = document.getElementById('badge-mtime');
+        if (badgeGit) badgeGit.classList.add('hidden');
+        if (badgeSize) badgeSize.classList.add('hidden');
+        if (badgeMtime) badgeMtime.classList.add('hidden');
     }
 
     function updatePreviewInfo(item) {
@@ -270,6 +377,29 @@
         return html;
     }
 
+    function formatSize(bytes) {
+        if (bytes === undefined || bytes === null) return '';
+        if (bytes < 1024) return `${bytes} B`;
+        if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+        return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    }
+
+    function formatRelativeTime(mtimeMs) {
+        if (!mtimeMs) return '';
+        const diff = Date.now() - mtimeMs;
+        const seconds = Math.floor(diff / 1000);
+        const minutes = Math.floor(seconds / 60);
+        const hours = Math.floor(minutes / 60);
+        const days = Math.floor(hours / 24);
+
+        if (seconds < 10) return 'just now';
+        if (seconds < 60) return `${seconds}s ago`;
+        if (minutes < 60) return `${minutes}m ago`;
+        if (hours < 24) return `${hours}h ago`;
+        if (days === 1) return 'yesterday';
+        return `${days} days ago`;
+    }
+
     function renderPreview(data) {
         const currentItem = navItems[selectedIndex]?.item;
         if (!currentItem || currentItem.file !== data.item.file || (currentItem.type === 'grep' && currentItem.line !== data.item.line)) {
@@ -297,6 +427,48 @@
             </div>`;
         }
         previewContent.innerHTML = html;
+
+        // Render preview ribbon stats
+        const badgeGit = document.getElementById('badge-git');
+        const badgeSize = document.getElementById('badge-size');
+        const badgeMtime = document.getElementById('badge-mtime');
+        
+        if (data.stats) {
+            const stats = data.stats;
+            
+            if (badgeGit && stats.gitStatus && stats.gitStatus !== 'unmodified' && stats.gitStatus !== 'none') {
+                badgeGit.className = `meta-badge git-${stats.gitStatus}`;
+                let icon = 'diff-ignored';
+                let text = stats.gitStatus;
+                if (stats.gitStatus === 'added') { icon = 'diff-added'; text = 'Added'; }
+                else if (stats.gitStatus === 'modified') { icon = 'diff-modified'; text = 'Modified'; }
+                else if (stats.gitStatus === 'untracked') { icon = 'diff-added'; text = 'Untracked'; }
+                badgeGit.innerHTML = `<i class="codicon codicon-${icon}"></i><span>${text}</span>`;
+                badgeGit.classList.remove('hidden');
+            } else if (badgeGit) {
+                badgeGit.classList.add('hidden');
+            }
+            
+            if (badgeSize && stats.size !== undefined) {
+                badgeSize.className = 'meta-badge file-size';
+                badgeSize.innerHTML = `<i class="codicon codicon-database"></i><span>${formatSize(stats.size)}</span>`;
+                badgeSize.classList.remove('hidden');
+            } else if (badgeSize) {
+                badgeSize.classList.add('hidden');
+            }
+            
+            if (badgeMtime && stats.mtime) {
+                badgeMtime.className = 'meta-badge time-stamp';
+                badgeMtime.innerHTML = `<i class="codicon codicon-history"></i><span>${formatRelativeTime(stats.mtime)}</span>`;
+                badgeMtime.classList.remove('hidden');
+            } else if (badgeMtime) {
+                badgeMtime.classList.add('hidden');
+            }
+        } else {
+            if (badgeGit) badgeGit.classList.add('hidden');
+            if (badgeSize) badgeSize.classList.add('hidden');
+            if (badgeMtime) badgeMtime.classList.add('hidden');
+        }
         
         requestAnimationFrame(() => {
             const matched = previewContent.querySelector('.preview-line.matched');
@@ -332,8 +504,20 @@
             case 'Tab':
                 e.preventDefault();
                 {
-                    const nextIdx = (MODES.indexOf(currentMode) + 1) % MODES.length;
+                    const dir = e.shiftKey ? -1 : 1;
+                    const nextIdx = (MODES.indexOf(currentMode) + dir + MODES.length) % MODES.length;
                     setMode(MODES[nextIdx]);
+                }
+                break;
+            case 'r':
+            case 'R':
+                if (e.altKey && e.shiftKey) {
+                    e.preventDefault();
+                    if (currentMode !== 'grep') return;
+                    const modes = ['fuzzy', 'plain', 'regex'];
+                    grepMode = modes[(modes.indexOf(grepMode) + 1) % modes.length];
+                    updateRegexToggleUI();
+                    triggerSearch();
                 }
                 break;
         }
@@ -350,9 +534,34 @@
             'files': 'File Finder',
             'recent': 'Recent Files',
             'buffers': 'Open Buffers',
-            'symbols': 'Document Symbols'
+            'symbols': 'Document Symbols',
+            'workspace-symbols': 'Workspace Symbols'
         };
-        titleLabel.textContent = labels[mode] || mode;
+        if (titleLabel) {
+            titleLabel.textContent = labels[mode] || mode;
+        }
+        if (regexToggle) {
+            regexToggle.style.display = mode === 'grep' ? 'flex' : 'none';
+        }
+
+        // Update tabs active state & slider position
+        document.querySelectorAll('.mode-tab').forEach(tab => {
+            if (tab.getAttribute('data-mode') === mode) {
+                tab.classList.add('active');
+                
+                const container = document.getElementById('mode-tabs-container');
+                const slider = container ? container.querySelector('.tab-slider') : null;
+                if (slider) {
+                    requestAnimationFrame(() => {
+                        slider.style.left = `${tab.offsetLeft}px`;
+                        slider.style.width = `${tab.offsetWidth}px`;
+                    });
+                }
+            } else {
+                tab.classList.remove('active');
+            }
+        });
+
         triggerSearch();
     }
 
@@ -375,6 +584,42 @@
     });
 
     // ── Utils ─────────────────────────────────────────────────────────────────
+    function getFileIcon(filename) {
+        const ext = filename.split('.').pop()?.toLowerCase();
+        switch (ext) {
+            case 'js': case 'ts': case 'jsx': case 'tsx': return 'codicon-code';
+            case 'json': case 'jsonc': return 'codicon-json';
+            case 'md': return 'codicon-markdown';
+            case 'css': case 'scss': case 'less': return 'codicon-symbol-color';
+            case 'html': case 'vue': case 'svelte': return 'codicon-layout';
+            case 'py': return 'codicon-symbol-class';
+            case 'rs': case 'go': case 'c': case 'cpp': case 'h': case 'zig': return 'codicon-symbol-keyword';
+            case 'png': case 'jpg': case 'jpeg': case 'svg': case 'gif': return 'codicon-file-media';
+            case 'sh': case 'bat': case 'ps1': return 'codicon-terminal';
+            default:
+                if (filename.startsWith('.') || filename.endsWith('rc') || ext === 'yml' || ext === 'yaml') return 'codicon-gear';
+                return 'codicon-file-code';
+        }
+    }
+
+    function getSymbolIcon(kind) {
+        switch (kind) {
+            case 'Class': return 'codicon-symbol-class';
+            case 'Method': return 'codicon-symbol-method';
+            case 'Function': return 'codicon-symbol-function';
+            case 'Variable': return 'codicon-symbol-variable';
+            case 'Constant': return 'codicon-symbol-constant';
+            case 'Property': case 'Field': return 'codicon-symbol-property';
+            case 'Interface': return 'codicon-symbol-interface';
+            case 'Enum': case 'EnumMember': return 'codicon-symbol-enum';
+            case 'Struct': return 'codicon-symbol-struct';
+            case 'Event': return 'codicon-symbol-event';
+            case 'Operator': return 'codicon-symbol-operator';
+            case 'Module': case 'Namespace': case 'Package': return 'codicon-symbol-namespace';
+            default: return 'codicon-symbol-misc';
+        }
+    }
+
     function splitPath(relativePath) {
         const parts = relativePath.replace(/\\/g, '/').split('/');
         const fname = parts.pop() || relativePath;

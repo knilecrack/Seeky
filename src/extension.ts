@@ -4,8 +4,7 @@ import { destroyFff } from './searchProvider';
 
 export function activate(context: vscode.ExtensionContext): void {
     // MRU Tracking for Recent Files
-    const mru = context.globalState.get<string[]>('mruFiles', []);
-    
+
     context.subscriptions.push(
         vscode.window.onDidChangeActiveTextEditor(editor => {
             if (editor && editor.document.uri.scheme === 'file') {
@@ -18,7 +17,7 @@ export function activate(context: vscode.ExtensionContext): void {
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('seeky.liveGrep', () => {
+        vscode.commands.registerCommand('seeky.grep', () => {
             ModalSearchPanel.show(context, 'grep');
         }),
         vscode.commands.registerCommand('seeky.findFiles', () => {

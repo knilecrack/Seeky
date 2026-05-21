@@ -6,8 +6,8 @@ import {
 } from './searchProvider';
 import type { SearchResult } from './searchProvider';
 
-export type SearchMode = 'grep' | 'files' | 'recent' | 'buffers' | 'symbols';
-export type GrepMode = 'plain' | 'regex';
+export type SearchMode = 'grep' | 'files' | 'recent' | 'buffers' | 'symbols' | 'workspace-symbols';
+export type GrepMode = 'plain' | 'regex' | 'fuzzy';
 
 function getNonce(): string {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -57,6 +57,7 @@ export class ModalSearchPanel {
         if (font === 'System Default') {
             return 'var(--vscode-font-family, system-ui, sans-serif)';
         }
+
         return `'${font.replace(/\s/g, '')}', var(--vscode-editor-font-family, monospace)`;
     }
 
@@ -86,7 +87,7 @@ export class ModalSearchPanel {
                 this.runSearch(
                     msg['query'] as string,
                     msg['mode'] as SearchMode,
-                    (msg['grepMode'] as GrepMode | undefined) ?? 'plain'
+                    (msg['grepMode'] as GrepMode | undefined) ?? 'fuzzy'
                 );
                 break;
             case 'preview':
@@ -111,7 +112,7 @@ export class ModalSearchPanel {
         this.cancelSearch?.();
         this.cancelSearch = undefined;
 
-        if (!query.trim() && mode !== 'recent' && mode !== 'buffers' && mode !== 'symbols') {
+        if (!query.trim() && mode !== 'recent' && mode !== 'buffers' && mode !== 'symbols' && mode !== 'workspace-symbols') {
             this.panel.webview.postMessage({ command: 'results', items: [], done: true });
             return;
         }
@@ -125,11 +126,12 @@ export class ModalSearchPanel {
         const items: SearchResult[] = [];
         const onResult = (item: SearchResult) => items.push(item);
         const storagePath = this.context.globalStorageUri.fsPath;
+        const currentFile = vscode.window.activeTextEditor?.document.uri.fsPath;
 
         if (mode === 'grep') {
-            this.cancelSearch = searchGrep(query, this.workspacePath, grepMode, storagePath, onResult, onDone);
+            this.cancelSearch = searchGrep(query, this.workspacePath, grepMode, storagePath, currentFile, onResult, onDone);
         } else if (mode === 'files') {
-            this.cancelSearch = searchFiles(query, this.workspacePath, storagePath, onResult, onDone);
+            this.cancelSearch = searchFiles(query, this.workspacePath, storagePath, currentFile, onResult, onDone);
         } else if (mode === 'recent') {
             const mru = this.context.globalState.get<string[]>('mruFiles', []);
             mru.forEach(file => {
@@ -152,6 +154,26 @@ export class ModalSearchPanel {
                     items.push({ type: 'file', file, relativePath: vscode.workspace.asRelativePath(file) });
                 }
             });
+            onDone(false);
+        } else if (mode === 'workspace-symbols') {
+            const symbols = await vscode.commands.executeCommand<vscode.SymbolInformation[]>(
+                'vscode.executeWorkspaceSymbolProvider',
+                query
+            );
+            if (symbols) {
+                symbols.forEach(sym => {
+                    items.push({
+                        type: 'symbol',
+                        file: sym.location.uri.fsPath,
+                        relativePath: vscode.workspace.asRelativePath(sym.location.uri.fsPath),
+                        line: sym.location.range.start.line + 1,
+                        col: sym.location.range.start.character + 1,
+                        text: sym.name,
+                        kind: vscode.SymbolKind[sym.kind],
+                        ...(sym.containerName ? { containerName: sym.containerName } : {})
+                    });
+                });
+            }
             onDone(false);
         } else if (mode === 'symbols') {
             const editor = vscode.window.activeTextEditor;
@@ -236,7 +258,7 @@ export class ModalSearchPanel {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; font-src ${webview.cspSource};">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data:; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; font-src ${webview.cspSource};">
     <link rel="stylesheet" href="${codiconsUri}">
     <link rel="stylesheet" href="${styleUri}">
     <style>
@@ -254,13 +276,46 @@ export class ModalSearchPanel {
 </head>
 <body>
     <div id="telescope-container">
+        <!-- Top Gradient Accent Line -->
+        <div class="window-accent-line"></div>
+
         <!-- Title Bar -->
         <div class="bar bar-divider justify-between">
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-2 h-full">
                 <i class="codicon codicon-telescope text-accent" style="font-size: 14px"></i>
-                <span id="title-label" class="font-bold text-primary">Live Grep</span>
+                <span id="title-label" style="display: none;">Live Grep</span>
+                
+                <!-- Modern Sliding Pill Tabs -->
+                <div id="mode-tabs-container">
+                    <div class="tab-slider"></div>
+                    <button class="mode-tab active" data-mode="grep">
+                        <i class="codicon codicon-search"></i>
+                        <span>Grep</span>
+                    </button>
+                    <button class="mode-tab" data-mode="files">
+                        <i class="codicon codicon-file"></i>
+                        <span>Files</span>
+                    </button>
+                    <button class="mode-tab" data-mode="recent">
+                        <i class="codicon codicon-history"></i>
+                        <span>Recent</span>
+                    </button>
+                    <button class="mode-tab" data-mode="buffers">
+                        <i class="codicon codicon-layers"></i>
+                        <span>Buffers</span>
+                    </button>
+                    <button class="mode-tab" data-mode="symbols">
+                        <i class="codicon codicon-symbol-class"></i>
+                        <span>Symbols</span>
+                    </button>
+                    <button class="mode-tab" data-mode="workspace-symbols">
+                        <i class="codicon codicon-globe"></i>
+                        <span>W-Symbols</span>
+                    </button>
+                </div>
             </div>
             <div class="flex items-center gap-4 text-muted">
+                <span><kbd class="text-accent bg-transparent">Tab</kbd> mode</span>
                 <span><kbd class="text-accent bg-transparent">↑↓</kbd> nav</span>
                 <span><kbd class="text-accent bg-transparent">↵</kbd> open</span>
                 <span><kbd class="text-accent bg-transparent">esc</kbd> close</span>
@@ -270,7 +325,8 @@ export class ModalSearchPanel {
         <!-- Search Input -->
         <div id="search-area">
             <span class="text-accent font-bold" style="font-size: 14px">❯</span>
-            <input type="text" id="search-input" autocomplete="off" spellcheck="false">
+            <input type="text" id="search-input" autocomplete="off" spellcheck="false" placeholder="Search...">
+            <div id="regex-toggle" title="Cycle Match Mode (Alt+Shift+R)"><i class="codicon codicon-sparkle"></i></div>
             <span id="result-count" class="text-muted text-[10.5px]"></span>
         </div>
 
@@ -287,12 +343,31 @@ export class ModalSearchPanel {
             <!-- Preview Pane -->
             <div id="preview-col">
                 <div id="preview-header">
-                    <span id="preview-filename" class="text-accent font-bold"></span>
-                    <span class="text-border-inner mx-2">│</span>
-                    <span id="preview-path" class="text-muted truncate"></span>
+                    <div class="flex items-center min-w-0">
+                        <span id="preview-filename" class="text-accent font-bold"></span>
+                        <span class="text-border-inner mx-2">│</span>
+                        <span id="preview-path" class="text-muted truncate"></span>
+                    </div>
+                    <!-- Metadata ribbon for size, date, Git status -->
+                    <div id="preview-metadata-ribbon">
+                        <span id="badge-git" class="meta-badge hidden"></span>
+                        <span id="badge-size" class="meta-badge hidden"></span>
+                        <span id="badge-mtime" class="meta-badge hidden"></span>
+                    </div>
                 </div>
-                <div id="preview-content" class="flex-1 overflow-auto p-2">
-                    <!-- Preview lines injected here -->
+                <div id="preview-content" class="flex-1 overflow-auto p-2 relative">
+                    <div id="watermark-preview">
+                        <div class="watermark-card">
+                            <i class="codicon codicon-telescope animate-pulse"></i>
+                            <h2>Seeky Modal Search</h2>
+                            <div class="watermark-shortcuts">
+                                <span><kbd>Tab</kbd> Cycle Modes</span>
+                                <span><kbd>Alt+Shift+R</kbd> Cycle Match Mode</span>
+                                <span><kbd>↑</kbd> / <kbd>↓</kbd> Navigate</span>
+                                <span><kbd>Enter</kbd> Open Result</span>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -309,7 +384,9 @@ export class ModalSearchPanel {
     <script nonce="${nonce}">
         window.INITIAL_MODE = "${mode}";
         window.INITIAL_QUERY = "${_initialQuery}";
+        window.MEDIA_URI = "${webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media'))}";
     </script>
+    <script nonce="${nonce}" src="${webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'icon-map.js'))}"></script>
     <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
