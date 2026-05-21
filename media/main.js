@@ -29,9 +29,7 @@
     let navItems = [];
     let virtualItems = [];
     let totalHeight = 0;
-    let searchTimeout = 0;
     const history = [];
-    let historyIndex = -1;
 
     if (regexToggle) {
         regexToggle.addEventListener('click', () => {
@@ -134,8 +132,7 @@
 
     // ── Search Logic ──────────────────────────────────────────────────────────
     searchInput.addEventListener('input', () => {
-        clearTimeout(searchTimeout);
-        searchTimeout = setTimeout(triggerSearch, 150);
+        triggerSearch();
     });
 
     function triggerSearch() {
@@ -148,7 +145,6 @@
             history.unshift(query);
             if (history.length > 50) history.pop();
         }
-        historyIndex = -1;
         resultCount.textContent = '...';
         vscode.postMessage({ command: 'search', query, mode: currentMode, grepMode });
     }
@@ -181,12 +177,10 @@
     }
 
     // ── Render Results ────────────────────────────────────────────────────────
-    function renderResults(items, capped = false, duration = null) {
+    function renderResults(items, capped = false) {
         navItems = [];
         virtualItems = [];
         let currentTop = 0;
-        
-        const oldSelectedIndex = selectedIndex;
 
         if (items.length === 0) {
             selectedIndex = -1;
@@ -584,24 +578,6 @@
     });
 
     // ── Utils ─────────────────────────────────────────────────────────────────
-    function getFileIcon(filename) {
-        const ext = filename.split('.').pop()?.toLowerCase();
-        switch (ext) {
-            case 'js': case 'ts': case 'jsx': case 'tsx': return 'codicon-code';
-            case 'json': case 'jsonc': return 'codicon-json';
-            case 'md': return 'codicon-markdown';
-            case 'css': case 'scss': case 'less': return 'codicon-symbol-color';
-            case 'html': case 'vue': case 'svelte': return 'codicon-layout';
-            case 'py': return 'codicon-symbol-class';
-            case 'rs': case 'go': case 'c': case 'cpp': case 'h': case 'zig': return 'codicon-symbol-keyword';
-            case 'png': case 'jpg': case 'jpeg': case 'svg': case 'gif': return 'codicon-file-media';
-            case 'sh': case 'bat': case 'ps1': return 'codicon-terminal';
-            default:
-                if (filename.startsWith('.') || filename.endsWith('rc') || ext === 'yml' || ext === 'yaml') return 'codicon-gear';
-                return 'codicon-file-code';
-        }
-    }
-
     function getSymbolIcon(kind) {
         switch (kind) {
             case 'Class': return 'codicon-symbol-class';
@@ -638,8 +614,6 @@
     function highlightText(text, query) {
         if (!query) { return escHtml(text); }
         try {
-            const pattern = escapeRegex(query).split('').join('.*?'); // Simple fuzzy simulation
-            const re = new RegExp(pattern, 'gi');
             // Advanced fuzzy highlighting is complex to do accurately with simple regex.
             // For now, we fallback to standard highlight if simple match works, otherwise just text.
             const exactRe = new RegExp(escapeRegex(query), 'gi');

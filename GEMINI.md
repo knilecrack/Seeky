@@ -135,3 +135,5 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - `Tab`: Toggle between Grep and Files mode.
 - `Alt+R`: Toggle Regex mode (in Grep search).
 - `Esc`: Close the search modal.
+
+- For running terminal applications use pwsh.exe instead of powershell.
