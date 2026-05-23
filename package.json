@@ -18,7 +18,8 @@
     "search",
     "telescope",
     "modal",
-    "grep"
+    "grep",
+    "fff"
   ],
   "activationEvents": [],
   "main": "./dist/extension.js",
@@ -53,6 +54,21 @@
         "command": "seeky.searchWordUnderCursor",
         "title": "Search Word Under Cursor",
         "category": "Seeky"
+      },
+      {
+        "command": "seeky.grepCurrentTab",
+        "title": "Fast Fuzzy: Current Buffer",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.fuzzyOpenBuffers",
+        "title": "Fast Fuzzy: Open Buffers",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.toggleFuzzyScope",
+        "title": "Toggle Fuzzy Scope",
+        "category": "Seeky"
       }
     ],
     "keybindings": [
@@ -73,6 +89,12 @@
         "key": "ctrl+shift+h",
         "mac": "cmd+shift+h",
         "when": "editorFocus"
+      },
+      {
+        "command": "seeky.toggleFuzzyScope",
+        "key": "alt+shift+o",
+        "mac": "alt+shift+o",
+        "when": "inQuickOpen"
       }
     ],
     "configuration": {

@@ -15,11 +15,11 @@
     const titleLabel = /** @type {HTMLElement} */ (document.getElementById('title-label'));
     const resultCount = /** @type {HTMLElement} */ (document.getElementById('result-count'));
     const regexToggle = /** @type {HTMLElement} */ (document.getElementById('regex-toggle'));
-    
+
     const previewFilename = /** @type {HTMLElement} */ (document.getElementById('preview-filename'));
     const previewPath = /** @type {HTMLElement} */ (document.getElementById('preview-path'));
     const previewContent = /** @type {HTMLElement} */ (document.getElementById('preview-content'));
-    
+
     const statusMode = /** @type {HTMLElement} */ (document.getElementById('status-mode'));
 
     // ── State ─────────────────────────────────────────────────────────────────
@@ -33,13 +33,31 @@
 
     if (regexToggle) {
         regexToggle.addEventListener('click', () => {
-            if (currentMode !== 'grep') return;
-            const modes = ['fuzzy', 'plain', 'regex'];
-            grepMode = modes[(modes.indexOf(grepMode) + 1) % modes.length];
-            updateRegexToggleUI();
-            triggerSearch();
             searchInput.focus();
         });
+    }
+
+    function parseGrepQuery(rawQuery) {
+        const grepModeByPrefix = {
+            'f': 'fuzzy',
+            'p': 'plain',
+            'r': 'regex',
+        };
+
+        // Prefix commands are recognized only as: "\\x <query>".
+        const prefixMatch = rawQuery.match(/^\\([fpr])(?:\s+([\s\S]*))?$/);
+        if (!prefixMatch) {
+            return { grepMode: 'fuzzy', searchQuery: rawQuery, waitingForInput: false };
+        }
+
+        const [, prefix, remainder] = prefixMatch;
+        const trimmedRemainder = (remainder || '').trim();
+
+        return {
+            grepMode: grepModeByPrefix[prefix] || 'fuzzy',
+            searchQuery: trimmedRemainder,
+            waitingForInput: !trimmedRemainder,
+        };
     }
 
     function updateRegexToggleUI() {
@@ -49,15 +67,15 @@
 
         if (grepMode === 'regex') {
             regexToggle.classList.add('active');
-            regexToggle.title = 'Regex Mode (Alt+Shift+R)';
+            regexToggle.title = 'Regex Mode (prefix query with \\r)';
             icon.className = 'codicon codicon-regex';
         } else if (grepMode === 'fuzzy') {
             regexToggle.classList.add('active');
-            regexToggle.title = 'Fuzzy Mode (Alt+Shift+R)';
+            regexToggle.title = 'Fuzzy Mode (default, or prefix query with \\f)';
             icon.className = 'codicon codicon-sparkle';
         } else {
             regexToggle.classList.remove('active');
-            regexToggle.title = 'Plain Text Mode (Alt+Shift+R)';
+            regexToggle.title = 'Plain Text Mode (prefix query with \\p)';
             icon.className = 'codicon codicon-case-sensitive';
         }
     }
@@ -111,6 +129,20 @@
         }
     }, 50);
 
+    const focusSearchInput = () => {
+        requestAnimationFrame(() => {
+            searchInput.focus();
+            searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length);
+        });
+    };
+
+    window.addEventListener('focus', focusSearchInput);
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) {
+            focusSearchInput();
+        }
+    });
+
     window.addEventListener('mousedown', (e) => {
         if (e.target !== searchInput && !/** @type {HTMLElement} */(e.target).closest('.result-item') && !/** @type {HTMLElement} */(e.target).closest('.mode-tab')) {
             setTimeout(() => searchInput.focus(), 10);
@@ -136,30 +168,41 @@
     });
 
     function triggerSearch() {
-        const query = searchInput.value;
+        const rawQuery = searchInput.value;
+        const grepConfig = currentMode === 'grep'
+            ? parseGrepQuery(rawQuery)
+            : { grepMode, searchQuery: rawQuery };
+        grepMode = grepConfig.grepMode;
+        updateRegexToggleUI();
+
+        const query = grepConfig.searchQuery;
+        if (currentMode === 'grep' && grepConfig.waitingForInput) {
+            renderResults([]);
+            return;
+        }
         if (!query.trim() && !['recent', 'buffers', 'symbols', 'workspace-symbols'].includes(currentMode)) {
             renderResults([]);
             return;
         }
-        if (query.trim() && history[0] !== query) {
-            history.unshift(query);
+        if (query.trim() && history[0] !== rawQuery) {
+            history.unshift(rawQuery);
             if (history.length > 50) history.pop();
         }
         resultCount.textContent = '...';
-        vscode.postMessage({ command: 'search', query, mode: currentMode, grepMode });
+        vscode.postMessage({ command: 'search', query, mode: currentMode, grepMode: grepConfig.grepMode });
     }
 
     function highlightRanges(text, ranges) {
         if (!ranges || ranges.length === 0) return escHtml(text);
-        
+
         let result = '';
         let lastEnd = 0;
-        
+
         for (const [start, end] of ranges) {
             // Ensure bounds are within string length just in case
             const s = Math.max(0, start);
             const e = Math.min(text.length, end);
-            
+
             if (s > lastEnd) {
                 result += escHtml(text.substring(lastEnd, s));
             }
@@ -168,11 +211,11 @@
             }
             lastEnd = Math.max(lastEnd, e);
         }
-        
+
         if (lastEnd < text.length) {
             result += escHtml(text.substring(lastEnd));
         }
-        
+
         return result;
     }
 
@@ -200,7 +243,7 @@
         });
 
         totalHeight = currentTop;
-        
+
         // Reset selection on filter update
         selectedIndex = items.length > 0 ? 0 : -1;
         resultsList.scrollTop = 0;
@@ -228,7 +271,7 @@
         endIdx = Math.min(virtualItems.length - 1, endIdx + buffer);
 
         const visibleItems = virtualItems.slice(startIdx, endIdx + 1);
-        
+
         resultsSpacer.style.height = `${totalHeight}px`;
         resultsContent.style.transform = `translateY(${virtualItems[startIdx]?.top || 0}px)`;
 
@@ -236,7 +279,7 @@
             const match = v.data;
             const sel = v.index === selectedIndex ? ' selected result-selected' : '';
             const { fname, dir } = splitPath(match.relativePath || '');
-            
+
             let matchHtml = '';
             let hlFname = escHtml(fname || '');
 
@@ -302,10 +345,10 @@
     function scrollToSelected() {
         const item = virtualItems.find(v => v.index === selectedIndex);
         if (!item) return;
-        
+
         const scrollTop = resultsList.scrollTop;
         const viewportHeight = resultsList.clientHeight;
-        
+
         const itemTop = item.top;
         const itemBottom = itemTop + item.height;
 
@@ -323,7 +366,7 @@
                 <h2>Seeky Modal Search</h2>
                 <div class="watermark-shortcuts">
                     <span><kbd>Tab</kbd> Cycle Modes</span>
-                    <span><kbd>Alt+Shift+R</kbd> Cycle Match Mode</span>
+                    <span><kbd>\\f</kbd> fuzzy <kbd>\\p</kbd> plain <kbd>\\r</kbd> regex</span>
                     <span><kbd>↑</kbd> / <kbd>↓</kbd> Navigate</span>
                     <span><kbd>Enter</kbd> Open Result</span>
                 </div>
@@ -354,10 +397,10 @@
     function applySyntaxHighlighting(escapedText) {
         // 1. Strings: &quot;...&quot;
         let html = escapedText.replace(/&quot;.*?&quot;/g, match => `<span class="syn-str">${match}</span>`);
-        
+
         // 2. Line Comments: // ...
         html = html.replace(/\/\/.*$/g, match => `<span class="syn-com">${match}</span>`);
-        
+
         // 3. Keywords & Numbers (not inside spans to be safe, but a simple regex works for this prototype)
         // We use a simple token replacer that ignores anything inside a span.
         const tokenRegex = /(<[^>]+>)|(\b[a-zA-Z_]\w*\b)|(\b\d+\b)/g;
@@ -410,7 +453,7 @@
         for (let i = 0; i < lines.length; i++) {
             const lineNum = data.startLine + i;
             const isTarget = lineNum === data.targetLine;
-            
+
             // Only highlight syntax if it's the target line for this spec
             let textHtml = escHtml(lines[i]);
             textHtml = applySyntaxHighlighting(textHtml);
@@ -426,10 +469,10 @@
         const badgeGit = document.getElementById('badge-git');
         const badgeSize = document.getElementById('badge-size');
         const badgeMtime = document.getElementById('badge-mtime');
-        
+
         if (data.stats) {
             const stats = data.stats;
-            
+
             if (badgeGit && stats.gitStatus && stats.gitStatus !== 'unmodified' && stats.gitStatus !== 'none') {
                 badgeGit.className = `meta-badge git-${stats.gitStatus}`;
                 let icon = 'diff-ignored';
@@ -442,7 +485,7 @@
             } else if (badgeGit) {
                 badgeGit.classList.add('hidden');
             }
-            
+
             if (badgeSize && stats.size !== undefined) {
                 badgeSize.className = 'meta-badge file-size';
                 badgeSize.innerHTML = `<i class="codicon codicon-database"></i><span>${formatSize(stats.size)}</span>`;
@@ -450,7 +493,7 @@
             } else if (badgeSize) {
                 badgeSize.classList.add('hidden');
             }
-            
+
             if (badgeMtime && stats.mtime) {
                 badgeMtime.className = 'meta-badge time-stamp';
                 badgeMtime.innerHTML = `<i class="codicon codicon-history"></i><span>${formatRelativeTime(stats.mtime)}</span>`;
@@ -463,7 +506,7 @@
             if (badgeSize) badgeSize.classList.add('hidden');
             if (badgeMtime) badgeMtime.classList.add('hidden');
         }
-        
+
         requestAnimationFrame(() => {
             const matched = previewContent.querySelector('.preview-line.matched');
             if (matched) {
@@ -503,17 +546,6 @@
                     setMode(MODES[nextIdx]);
                 }
                 break;
-            case 'r':
-            case 'R':
-                if (e.altKey && e.shiftKey) {
-                    e.preventDefault();
-                    if (currentMode !== 'grep') return;
-                    const modes = ['fuzzy', 'plain', 'regex'];
-                    grepMode = modes[(modes.indexOf(grepMode) + 1) % modes.length];
-                    updateRegexToggleUI();
-                    triggerSearch();
-                }
-                break;
         }
     });
 
@@ -542,7 +574,7 @@
         document.querySelectorAll('.mode-tab').forEach(tab => {
             if (tab.getAttribute('data-mode') === mode) {
                 tab.classList.add('active');
-                
+
                 const container = document.getElementById('mode-tabs-container');
                 const slider = container ? container.querySelector('.tab-slider') : null;
                 if (slider) {
@@ -572,7 +604,7 @@
                 triggerSearch();
                 break;
             case 'focus':
-                searchInput.focus();
+                focusSearchInput();
                 break;
         }
     });
@@ -613,10 +645,12 @@
 
     function highlightText(text, query) {
         if (!query) { return escHtml(text); }
+        const effectiveQuery = currentMode === 'grep' ? parseGrepQuery(query).searchQuery : query;
+        if (!effectiveQuery) { return escHtml(text); }
         try {
             // Advanced fuzzy highlighting is complex to do accurately with simple regex.
             // For now, we fallback to standard highlight if simple match works, otherwise just text.
-            const exactRe = new RegExp(escapeRegex(query), 'gi');
+            const exactRe = new RegExp(escapeRegex(effectiveQuery), 'gi');
             let result = '';
             let lastIndex = 0;
             for (let match = exactRe.exec(text); match !== null; match = exactRe.exec(text)) {
