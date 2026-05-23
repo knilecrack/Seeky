@@ -45,6 +45,11 @@ export class ModalSearchPanel {
         const history = this.context.globalState.get<string[]>('searchHistory', []);
         this.panel.webview.html = this.getHtmlContent(mode, initialQuery, history);
         this.panel.webview.onDidReceiveMessage(msg => this.handleMessage(msg));
+        this.panel.onDidChangeViewState(event => {
+            if (event.webviewPanel.active) {
+                this.panel.webview.postMessage({ command: 'focus' });
+            }
+        });
         this.panel.onDidDispose(() => {
             ModalSearchPanel.instance = undefined;
             this.cancelSearch?.();
@@ -328,7 +333,7 @@ export class ModalSearchPanel {
         <div id="search-area">
             <span class="text-accent font-bold" style="font-size: 14px">❯</span>
             <input type="text" id="search-input" autocomplete="off" spellcheck="false" placeholder="Search...">
-            <div id="regex-toggle" title="Cycle Match Mode (Alt+Shift+R)"><i class="codicon codicon-sparkle"></i></div>
+            <div id="regex-toggle" title="Default fuzzy. Prefix with \\f, \\p, or \\r"><i class="codicon codicon-sparkle"></i></div>
             <span id="result-count" class="text-muted text-[10.5px]"></span>
         </div>
 
@@ -364,7 +369,7 @@ export class ModalSearchPanel {
                             <h2>Seeky Modal Search</h2>
                             <div class="watermark-shortcuts">
                                 <span><kbd>Tab</kbd> Cycle Modes</span>
-                                <span><kbd>Alt+Shift+R</kbd> Cycle Match Mode</span>
+                                <span><kbd>\\f</kbd> fuzzy <kbd>\\p</kbd> plain <kbd>\\r</kbd> regex</span>
                                 <span><kbd>↑</kbd> / <kbd>↓</kbd> Navigate</span>
                                 <span><kbd>Enter</kbd> Open Result</span>
                             </div>

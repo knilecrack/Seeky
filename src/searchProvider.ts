@@ -3,6 +3,7 @@ import { join, dirname } from 'node:path';
 import { execSync } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 import type { FileFinder, GrepMatch, FileItem } from '@ff-labs/fff-node';
+import { log } from './logger';
 
 export interface GrepResult {
     type: 'grep';
@@ -102,7 +103,7 @@ async function getOrCreateFinder(basePath: string, storagePath?: string): Promis
         if (historyDbPath) options.historyDbPath = historyDbPath;
         const result = FF.create(options);
         if (!result.ok) {
-            console.error('[Seeky] FFF init failed:', result.error);
+            log.error('FFF init failed.', result.error);
             return null;
         }
         await result.value.waitForScan(10_000);
