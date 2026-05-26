@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 
+
 type LogLevel = 'info' | 'warn' | 'error';
 
 class SeekyLogger {

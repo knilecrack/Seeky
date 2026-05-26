@@ -30,6 +30,9 @@
     let virtualItems = [];
     let totalHeight = 0;
     const history = [];
+    let lastEscapeTimestamp = 0;
+
+    const DOUBLE_ESCAPE_WINDOW_MS = 380;
 
     if (regexToggle) {
         regexToggle.addEventListener('click', () => {
@@ -82,7 +85,7 @@
     updateRegexToggleUI();
 
     const RESULT_ITEM_HEIGHT = 42;
-    const MODES = ['grep', 'files', 'recent', 'buffers', 'symbols', 'workspace-symbols'];
+    const MODES = ['grep', 'files', 'git-modified', 'recent', 'buffers', 'symbols', 'workspace-symbols'];
 
     // ── Mode / Focus Management ───────────────────────────────────────────────
     searchInput.addEventListener('focus', () => {
@@ -180,7 +183,7 @@
             renderResults([]);
             return;
         }
-        if (!query.trim() && !['recent', 'buffers', 'symbols', 'workspace-symbols'].includes(currentMode)) {
+        if (!query.trim() && !['recent', 'buffers', 'symbols', 'workspace-symbols', 'git-modified'].includes(currentMode)) {
             renderResults([]);
             return;
         }
@@ -536,7 +539,17 @@
                 break;
             case 'Escape':
                 e.preventDefault();
-                vscode.postMessage({ command: 'close' });
+                {
+                    const now = Date.now();
+                    if (now - lastEscapeTimestamp <= DOUBLE_ESCAPE_WINDOW_MS) {
+                        lastEscapeTimestamp = 0;
+                        vscode.postMessage({ command: 'close' });
+                    } else {
+                        lastEscapeTimestamp = now;
+                        statusMode.textContent = '-- ESC AGAIN TO CLOSE --';
+                        statusMode.style.color = 'var(--text-muted)';
+                    }
+                }
                 break;
             case 'Tab':
                 e.preventDefault();
@@ -555,9 +568,11 @@
 
     function setMode(mode) {
         currentMode = mode;
+        lastEscapeTimestamp = 0;
         const labels = {
             'grep': 'Live Grep',
             'files': 'File Finder',
+            'git-modified': 'Git Modified Files',
             'recent': 'Recent Files',
             'buffers': 'Open Buffers',
             'symbols': 'Document Symbols',

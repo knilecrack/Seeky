@@ -2,7 +2,7 @@
   "name": "seeky",
   "displayName": "Seeky",
   "description": "Telescope-inspired modal search using ripgrep/fff — live grep and file finder with preview",
-  "version": "0.0.2",
+  "version": "0.1.2",
   "publisher": "knilecrack",
   "engines": {
     "vscode": "^1.95.0"
@@ -25,6 +25,16 @@
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
+      {
+        "command": "seeky.openModal",
+        "title": "Open Modal",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.openModalGrep",
+        "title": "Open Modal Grep",
+        "category": "Seeky"
+      },
       {
         "command": "seeky.grep",
         "title": "Live Grep",
@@ -61,6 +71,11 @@
         "category": "Seeky"
       },
       {
+        "command": "seeky.searchThroughGitModifiedFiles",
+        "title": "Search Git Modified Files",
+        "category": "Seeky"
+      },
+      {
         "command": "seeky.fuzzyOpenBuffers",
         "title": "Fast Fuzzy: Open Buffers",
         "category": "Seeky"
@@ -89,6 +104,12 @@
         "key": "ctrl+shift+h",
         "mac": "cmd+shift+h",
         "when": "editorFocus"
+      },
+      {
+        "command": "seeky.searchThroughGitModifiedFiles",
+        "key": "ctrl+alt+s ctrl+alt+g",
+        "mac": "cmd+alt+s cmd+alt+g",
+        "when": "!terminalFocus"
       },
       {
         "command": "seeky.toggleFuzzyScope",
@@ -127,7 +148,10 @@
     "watch": "node esbuild.js --watch",
     "lint": "biome lint .",
     "compile": "tsc -p ./ --noEmit",
-    "package": "vsce package"
+    "version:major": "npm version major --no-git-tag-version",
+    "version:minor": "npm version minor --no-git-tag-version",
+    "version:patch": "npm version patch --no-git-tag-version",
+    "package": "npm run version:patch && vsce package"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.15",
