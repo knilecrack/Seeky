@@ -4,6 +4,7 @@ import { execSync } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 import type { FileFinder, GrepMatch, FileItem } from '@ff-labs/fff-node';
 import { log } from './logger';
+import { spawnSync } from 'node:child_process';
 
 export interface GrepResult {
     type: 'grep';
@@ -20,7 +21,7 @@ export interface FileResult {
     relativePath: string;
 }
 
-export interface SymbolResult {
+export interface ISymbolResult {
     type: 'symbol';
     file: string;
     relativePath: string;
@@ -31,12 +32,9 @@ export interface SymbolResult {
     containerName?: string;
 }
 
-export type SearchResult = GrepResult | FileResult | SymbolResult;
+export type FFSearchResult = GrepResult | FileResult | ISymbolResult;
 
 const MAX_RESULTS = 100;
-
-// Bypass esbuild's CJS transform so the ESM package can be imported at runtime
-const dynamicImport = new Function('m', 'return import(m)') as (m: string) => Promise<{ FileFinder: typeof FileFinder }>;
 
 let finderInstance: FileFinder | null = null;
 let finderPromise: Promise<FileFinder | null> | null = null;
@@ -64,10 +62,7 @@ async function getOrCreateFinder(basePath: string, storagePath?: string): Promis
 
     currentBasePath = normalizedBasePath;
     finderPromise = (async () => {
-        const { pathToFileURL } = await import('node:url');
-        const modulePath = join(__dirname, '../node_modules/@ff-labs/fff-node/dist/src/index.js');
-        const moduleUrl = pathToFileURL(modulePath).toString();
-        const { FileFinder: FF } = await dynamicImport(moduleUrl);
+        const { FileFinder: FF } = await import('@ff-labs/fff-node');
 
         let frecencyDbPath: string | undefined;
         let historyDbPath: string | undefined;
@@ -167,6 +162,73 @@ export function searchGrep(
     return () => { cancelled = true; };
 }
 
+function getGitModifiedFiles(workspacePath: string): string[] {
+    const out = execSync('git status --porcelain', {
+        cwd: workspacePath,
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'ignore']
+    }).trim();
+
+    if (!out) return [];
+    return out
+        .split('\n')
+        .map(line => {
+            const status = line.slice(0, 2);
+            const pathPart = line.slice(3).trim();
+
+            // Exclude deleted paths because they cannot be opened in editor preview.
+            if (status.includes('D')) {
+                return '';
+            }
+
+            // Rename entries are represented as: "old/path -> new/path".
+            const renamedParts = pathPart.split(' -> ');
+            return renamedParts.length > 1
+                ? renamedParts[renamedParts.length - 1]?.trim() ?? ''
+                : pathPart;
+        })
+        .filter(path => path.length > 0);
+}
+
+export function searchGitModifiedFiles(
+    query: string,
+    workspacePath: string,
+    onResult: (result: FileResult) => void,
+    onDone: (cancelled: boolean, duration?: number) => void
+): () => void {
+    let cancelled = false;
+
+    const start = performance.now();
+
+    try {
+        const normalizedQuery = query.trim().toLowerCase();
+        const modifiedPaths = getGitModifiedFiles(workspacePath);
+        for (const relativePath of modifiedPaths) {
+            if (cancelled) {
+                break;
+            }
+
+            if (normalizedQuery && !relativePath.toLowerCase().includes(normalizedQuery)) {
+                continue;
+            }
+
+            onResult({
+                type: 'file',
+                file: join(workspacePath, relativePath),
+                relativePath,
+            });
+        }
+
+        onDone(cancelled, performance.now() - start);
+    } catch {
+        onDone(cancelled, performance.now() - start);
+    }
+
+    return () => {
+        cancelled = true;
+    };
+}
+
 export function searchFiles(
     query: string,
     workspacePath: string,
@@ -226,6 +288,7 @@ export function readFilePreview(
     targetLine: number,
     contextLines = 35
 ): { content: string; startLine: number; stats?: { size: number; mtime: number; gitStatus?: string } } {
+
     try {
         const stats = statSync(filePath);
         const gitStatus = getGitStatus(filePath, workspacePath);
@@ -243,3 +306,13 @@ export function readFilePreview(
     }
 }
 
+export function batAvailable(): boolean {
+    return platfromLookup('bat');
+}
+
+
+export function platfromLookup(name: string): boolean {
+    const lookup = process.platform === 'win32' ? 'where.exe' : 'which'; 
+    const result = spawnSync(lookup, [name], { stdio: 'ignore' });
+    return result.status === 0;
+}
