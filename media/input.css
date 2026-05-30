@@ -265,6 +265,22 @@ kbd {
     border-left: 3px solid transparent;
 }
 
+.result-item-match-only {
+    height: 26px;
+    margin-top: 0;
+    border-radius: 0 0 4px 4px;
+    border-left-color: var(--border-outer);
+}
+
+.result-item-match-only:last-child,
+.result-item-match-only + .result-item:not(.result-item-match-only) {
+    margin-bottom: 3px;
+}
+
+.result-item-match-only.selected {
+    border-left-color: var(--sel-border);
+}
+
 .result-item:hover {
     background: var(--border-inner);
     transform: translateX(2px);
@@ -428,6 +444,54 @@ mark.fuzzy-match {
 
 .preview-line.matched .preview-line-text {
     color: var(--text-primary);
+}
+
+.preview-line.diff-add {
+    background-color: rgba(158, 206, 106, 0.1);
+}
+
+.preview-line.diff-add .preview-line-text {
+    color: #9ece6a;
+}
+
+.preview-line.diff-remove {
+    background-color: rgba(247, 118, 142, 0.1);
+}
+
+.preview-line.diff-remove .preview-line-text {
+    color: #f7768e;
+}
+
+.preview-line.diff-hunk {
+    background-color: rgba(122, 162, 247, 0.1);
+}
+
+.preview-line.diff-hunk .preview-line-text {
+    color: #7aa2f7;
+}
+
+body.vscode-light .preview-line.diff-add {
+    background-color: rgba(212, 165, 106, 0.1);
+}
+
+body.vscode-light .preview-line.diff-add .preview-line-text {
+    color: #d4a574;
+}
+
+body.vscode-light .preview-line.diff-remove {
+    background-color: rgba(183, 85, 102, 0.1);
+}
+
+body.vscode-light .preview-line.diff-remove .preview-line-text {
+    color: #b75566;
+}
+
+body.vscode-light .preview-line.diff-hunk {
+    background-color: rgba(144, 122, 169, 0.1);
+}
+
+body.vscode-light .preview-line.diff-hunk .preview-line-text {
+    color: #907aa9;
 }
 
 #watermark-preview {

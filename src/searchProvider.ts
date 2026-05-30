@@ -1,5 +1,5 @@
 import { readFileSync, statSync, existsSync, mkdirSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, relative } from 'node:path';
 import { execSync } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 import type { FileFinder, GrepMatch, FileItem } from '@ff-labs/fff-node';
@@ -13,12 +13,15 @@ export interface GrepResult {
     line: number;
     col: number;
     text: string;
+    frecencyScore: number;
 }
 
 export interface FileResult {
     type: 'file';
     file: string;
     relativePath: string;
+    source?: 'git-modified';
+    frecencyScore?: number;
 }
 
 export interface ISymbolResult {
@@ -116,6 +119,22 @@ export function destroyFff(): void {
     currentBasePath = null;
 }
 
+/**
+ * Record a user selection so future searches with similar queries rank the
+ * chosen file higher. Safe to call when the finder is not yet initialized —
+ * the call is dropped silently.
+ */
+export function trackQuerySelection(query: string, selectedFilePath: string): void {
+    if (!finderInstance || !query.trim() || !selectedFilePath) {
+        return;
+    }
+    try {
+        finderInstance.trackQuery(query, selectedFilePath);
+    } catch (error) {
+        log.error('Seeky: trackQuery failed.', error);
+    }
+}
+
 export function searchGrep(
     query: string,
     workspacePath: string,
@@ -153,6 +172,7 @@ export function searchGrep(
                 line: match.lineNumber,
                 col: match.col + 1,
                 text: match.lineContent,
+                frecencyScore: match.totalFrecencyScore ?? 0,
             });
         }
 
@@ -216,6 +236,7 @@ export function searchGitModifiedFiles(
                 type: 'file',
                 file: join(workspacePath, relativePath),
                 relativePath,
+                source: 'git-modified',
             });
         }
 
@@ -255,7 +276,12 @@ export function searchFiles(
         for (const item of result.value.items as FileItem[]) {
             if (cancelled) { break; }
             const filePath = join(workspacePath, item.relativePath);
-            onResult({ type: 'file', file: filePath, relativePath: item.relativePath });
+            onResult({
+                type: 'file',
+                file: filePath,
+                relativePath: item.relativePath,
+                frecencyScore: item.totalFrecencyScore ?? 0,
+            });
         }
 
         onDone(cancelled, duration);
@@ -304,6 +330,71 @@ export function readFilePreview(
     } catch {
         return { content: '', startLine: 1 };
     }
+}
+
+export function readGitDiffPreview(
+    filePath: string,
+    workspacePath: string
+): { content: string; startLine: number; stats?: { size: number; mtime: number; gitStatus?: string } } {
+    let stats: { size: number; mtime: number; gitStatus?: string } | undefined;
+    try {
+        const fileStats = statSync(filePath);
+        stats = {
+            size: fileStats.size,
+            mtime: fileStats.mtimeMs,
+            gitStatus: getGitStatus(filePath, workspacePath),
+        };
+    } catch {
+        stats = undefined;
+    }
+
+    try {
+        const relativePath = relative(workspacePath, filePath).replace(/\\/g, '/');
+        const runDiff = (args: string[]): string => {
+            const result = spawnSync('git', args, {
+                cwd: workspacePath,
+                encoding: 'utf-8',
+                stdio: ['ignore', 'pipe', 'ignore'],
+            });
+            if (result.error) {
+                return '';
+            }
+            return result.stdout?.trim() ?? '';
+        };
+
+        let content = runDiff(['diff', '--no-color', '--', relativePath]);
+        if (!content) {
+            content = runDiff(['diff', '--no-color', '--cached', '--', relativePath]);
+        }
+
+        if (!content && stats?.gitStatus === 'untracked') {
+            content = [
+                `diff --git a/${relativePath} b/${relativePath}`,
+                'new file mode 100644',
+                '--- /dev/null',
+                `+++ b/${relativePath}`,
+                '',
+                'Untracked file preview: no git diff hunks are available until the file is staged.',
+            ].join('\n');
+        }
+
+        if (content) {
+            return {
+                content,
+                startLine: 1,
+                ...(stats ? { stats } : {}),
+            };
+        }
+    } catch {
+        // Fall through to plain preview fallback.
+    }
+
+    const fallback = readFilePreview(filePath, workspacePath, 1);
+    return {
+        content: fallback.content,
+        startLine: 1,
+        ...(fallback.stats ? { stats: fallback.stats } : {}),
+    };
 }
 
 export function batAvailable(): boolean {

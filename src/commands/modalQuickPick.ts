@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { log } from '../logger';
-import { searchFiles } from '../searchProvider';
+import { searchFiles, trackQuerySelection } from '../searchProvider';
 import { getInitialFuzzyQuery } from '../fuzzy/matcher';
 import type { ModalFilePickItem } from '../types';
 
@@ -27,6 +27,7 @@ export async function showSeekyModalQuickPick(context: vscode.ExtensionContext):
     let cancelSearch: (() => void) | undefined;
     let debounceTimer: ReturnType<typeof setTimeout> | undefined;
     let requestId = 0;
+    let lastQuery = '';
 
     const setHint = (label: string, detail?: string): void => {
         const hintItem: ModalFilePickItem = detail
@@ -54,6 +55,8 @@ export async function showSeekyModalQuickPick(context: vscode.ExtensionContext):
             setHint('Type to search files', 'Enter opens file, Esc closes');
             return;
         }
+
+        lastQuery = trimmed;
 
         quickPick.busy = true;
         const found: ModalFilePickItem[] = [];
@@ -112,6 +115,7 @@ export async function showSeekyModalQuickPick(context: vscode.ExtensionContext):
         try {
             const doc = await vscode.workspace.openTextDocument(selected.filePath);
             await vscode.window.showTextDocument(doc, { preview: false });
+            trackQuerySelection(lastQuery, selected.filePath);
             quickPick.hide();
         } catch (error) {
             log.error('Seeky modal failed to open selected file.', error);

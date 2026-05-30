@@ -85,7 +85,9 @@
     updateRegexToggleUI();
 
     const RESULT_ITEM_HEIGHT = 42;
-    const MODES = ['grep', 'files', 'git-modified', 'recent', 'buffers', 'symbols', 'workspace-symbols'];
+    const GREP_MATCH_ONLY_HEIGHT = 26;
+    const PATH_TRUNCATE_LEN = 32;
+    const MODES = ['grep', 'files', 'recent', 'buffers', 'symbols', 'workspace-symbols', 'git-modified'];
 
     // ── Mode / Focus Management ───────────────────────────────────────────────
     searchInput.addEventListener('focus', () => {
@@ -241,8 +243,10 @@
 
         items.forEach((item, i) => {
             navItems.push({ type: 'match', item });
-            virtualItems.push({ type: 'match', data: item, index: i, top: currentTop, height: RESULT_ITEM_HEIGHT });
-            currentTop += RESULT_ITEM_HEIGHT;
+            const isFirstInGroup = currentMode !== 'grep' || i === 0 || item.relativePath !== items[i - 1]?.relativePath;
+            const height = isFirstInGroup ? RESULT_ITEM_HEIGHT : GREP_MATCH_ONLY_HEIGHT;
+            virtualItems.push({ type: 'match', data: item, index: i, top: currentTop, height, isFirstInGroup });
+            currentTop += height;
         });
 
         totalHeight = currentTop;
@@ -282,6 +286,7 @@
             const match = v.data;
             const sel = v.index === selectedIndex ? ' selected result-selected' : '';
             const { fname, dir } = splitPath(match.relativePath || '');
+            const truncatedDir = truncatePath(dir, PATH_TRUNCATE_LEN);
 
             let matchHtml = '';
             let hlFname = escHtml(fname || '');
@@ -305,6 +310,13 @@
                 hlFname = highlightText(fname || '', searchInput.value);
             }
 
+            // Grep mode: non-first items in a file group render only the match row
+            if (currentMode === 'grep' && !v.isFirstInGroup) {
+                return `<div class="result-item result-item-match-only${sel}" data-index="${v.index}" style="height:${v.height}px">
+                    ${matchHtml}
+                </div>`;
+            }
+
             let iconHtml = '';
             if ((currentMode === 'symbols' || currentMode === 'workspace-symbols') && match.kind) {
                 const iconClass = getSymbolIcon(match.kind);
@@ -319,7 +331,7 @@
                 <div class="result-file-row">
                     ${iconHtml}
                     <span class="result-filename truncate">${hlFname}</span>
-                    <span class="result-path truncate">${escHtml(dir)}</span>
+                    <span class="result-path truncate">${escHtml(truncatedDir)}</span>
                 </div>
                 ${matchHtml}
             </div>`;
@@ -452,19 +464,34 @@
         }
 
         const lines = data.content.split('\n');
+        const isDiff = data.content.startsWith('diff --git') || /^(---|\\+\\+\\+) /.test(data.content);
         let html = ``;
         for (let i = 0; i < lines.length; i++) {
             const lineNum = data.startLine + i;
             const isTarget = lineNum === data.targetLine;
 
-            // Only highlight syntax if it's the target line for this spec
             let textHtml = escHtml(lines[i]);
-            textHtml = applySyntaxHighlighting(textHtml);
-
-            html += `<div class="preview-line${isTarget ? ' matched' : ''}">
-                <span class="preview-line-num">${lineNum}</span>
-                <span class="preview-line-text">${textHtml}</span>
-            </div>`;
+            if (isDiff) {
+                const line = lines[i];
+                let diffClass = '';
+                if (line.startsWith('@@')) {
+                    diffClass = ' diff-hunk';
+                } else if (line.startsWith('+') && !line.startsWith('+++')) {
+                    diffClass = ' diff-add';
+                } else if (line.startsWith('-') && !line.startsWith('---')) {
+                    diffClass = ' diff-remove';
+                }
+                html += `<div class="preview-line${isTarget ? ' matched' : ''}${diffClass}">
+                    <span class="preview-line-num">${lineNum}</span>
+                    <span class="preview-line-text">${textHtml}</span>
+                </div>`;
+            } else {
+                textHtml = applySyntaxHighlighting(textHtml);
+                html += `<div class="preview-line${isTarget ? ' matched' : ''}">
+                    <span class="preview-line-num">${lineNum}</span>
+                    <span class="preview-line-text">${textHtml}</span>
+                </div>`;
+            }
         }
         previewContent.innerHTML = html;
 
@@ -648,6 +675,11 @@
         const fname = parts.pop() || relativePath;
         const dir = parts.join('/');
         return { fname, dir };
+    }
+
+    function truncatePath(path, maxLen) {
+        if (path.length <= maxLen) return path;
+        return '\u2026' + path.slice(-(maxLen - 1));
     }
 
     function escHtml(str) {

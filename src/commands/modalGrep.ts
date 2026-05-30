@@ -1,7 +1,111 @@
 import * as vscode from 'vscode';
 import { log } from '../logger';
-import { searchGrep } from '../searchProvider';
+import { searchGrep, trackQuerySelection } from '../searchProvider';
 import type { ModalGrepPickItem } from '../types';
+
+type GrepMatch = {
+    readonly relativePath: string;
+    readonly text: string;
+    readonly file: string;
+    readonly line: number;
+    readonly col: number;
+    readonly frecencyScore: number;
+};
+
+function buildGroupedItems(matches: readonly GrepMatch[]): ModalGrepPickItem[] {
+    // Group matches by file while preserving first-seen order so a stable
+    // identity exists for tie-breaking after frecency sort.
+    const groups = new Map<string, { firstIndex: number; score: number; matches: GrepMatch[] }>();
+    matches.forEach((match, index) => {
+        const existing = groups.get(match.relativePath);
+        if (existing) {
+            existing.matches.push(match);
+            if (match.frecencyScore > existing.score) {
+                existing.score = match.frecencyScore;
+            }
+        } else {
+            groups.set(match.relativePath, {
+                firstIndex: index,
+                score: match.frecencyScore,
+                matches: [match],
+            });
+        }
+    });
+
+    // Highest frecency first; fall back to original arrival order so non-frecent
+    // files retain the engine's relevance ordering.
+    const orderedGroups = [...groups.entries()].sort((a, b) => {
+        if (b[1].score !== a[1].score) {
+            return b[1].score - a[1].score;
+        }
+        return a[1].firstIndex - b[1].firstIndex;
+    });
+
+    const items: ModalGrepPickItem[] = [];
+    orderedGroups.forEach(([relativePath, group], groupIndex) => {
+        const pathParts = relativePath.replace(/\\/g, '/').split('/');
+        const fileName = pathParts[pathParts.length - 1] || relativePath;
+        const dirPath = pathParts.slice(0, -1).join('/');
+
+        // Blank separator between groups for breathing room.
+        if (groupIndex > 0) {
+            items.push({
+                label: '',
+                kind: vscode.QuickPickItemKind.Separator,
+                alwaysShow: true,
+            });
+        }
+
+        // Bold-style Unicode filename + faint en-dash separator for the folder.
+        const boldName = toBoldUnicode(fileName);
+        const separatorLabel = dirPath ? `${boldName}   \u2013  ${dirPath}` : boldName;
+        items.push({
+            label: separatorLabel,
+            kind: vscode.QuickPickItemKind.Separator,
+            alwaysShow: true,
+        });
+
+        for (const match of group.matches) {
+            items.push({
+                label: `   ${match.line}:${match.col}`,
+                description: match.text.trim() || '(blank line)',
+                filePath: match.file,
+                line: match.line,
+                col: match.col,
+                alwaysShow: true,
+            });
+        }
+    });
+
+    return items;
+}
+
+// Map ASCII letters/digits to their Unicode "mathematical sans-serif bold"
+// equivalents so QuickPick renders them visually heavier without needing a
+// custom font/theme. Non-ASCII characters pass through unchanged.
+function toBoldUnicode(input: string): string {
+    let out = '';
+    for (const ch of input) {
+        const code = ch.codePointAt(0);
+        if (code === undefined) {
+            out += ch;
+            continue;
+        }
+        if (code >= 0x41 && code <= 0x5a) {
+            // A-Z -> 𝗔-𝗭 (U+1D5D4 + offset)
+            out += String.fromCodePoint(0x1d5d4 + (code - 0x41));
+        } else if (code >= 0x61 && code <= 0x7a) {
+            // a-z -> 𝗮-𝘇 (U+1D5EE + offset)
+            out += String.fromCodePoint(0x1d5ee + (code - 0x61));
+        } else if (code >= 0x30 && code <= 0x39) {
+            // 0-9 -> 𝟬-𝟵 (U+1D7EC + offset)
+            out += String.fromCodePoint(0x1d7ec + (code - 0x30));
+        } else {
+            out += ch;
+        }
+    }
+    return out;
+}
 
 function parseModalGrepQuery(rawQuery: string): {
     grepMode: 'plain' | 'regex' | 'fuzzy';
@@ -53,6 +157,7 @@ export async function showSeekyModalGrepQuickPick(context: vscode.ExtensionConte
     let cancelSearch: (() => void) | undefined;
     let debounceTimer: ReturnType<typeof setTimeout> | undefined;
     let requestId = 0;
+    let lastQuery = '';
 
     const setHint = (label: string, detail?: string): void => {
         const hintItem: ModalGrepPickItem = detail
@@ -88,8 +193,10 @@ export async function showSeekyModalGrepQuickPick(context: vscode.ExtensionConte
             return;
         }
 
+        lastQuery = query;
+
         quickPick.busy = true;
-        const found: ModalGrepPickItem[] = [];
+        const found: GrepMatch[] = [];
         cancelSearch = searchGrep(
             query,
             workspacePath,
@@ -98,19 +205,18 @@ export async function showSeekyModalGrepQuickPick(context: vscode.ExtensionConte
             currentFile,
             result => {
                 found.push({
-                    label: `${result.relativePath}:${result.line}:${result.col}`,
-                    description: result.text.trim() || '(blank line)',
-                    filePath: result.file,
+                    relativePath: result.relativePath,
+                    text: result.text,
+                    file: result.file,
                     line: result.line,
                     col: result.col,
-                    alwaysShow: true,
+                    frecencyScore: result.frecencyScore,
                 });
             },
             cancelled => {
                 if (token !== requestId) {
                     return;
                 }
-
                 quickPick.busy = false;
                 if (cancelled) {
                     return;
@@ -121,10 +227,11 @@ export async function showSeekyModalGrepQuickPick(context: vscode.ExtensionConte
                     return;
                 }
 
-                quickPick.items = found;
-                const first = found[0];
-                if (first) {
-                    quickPick.activeItems = [first];
+                const groupedItems = buildGroupedItems(found);
+                quickPick.items = groupedItems;
+                const firstSelectable = groupedItems.find(item => item.filePath);
+                if (firstSelectable) {
+                    quickPick.activeItems = [firstSelectable];
                 }
             },
         );
@@ -153,6 +260,7 @@ export async function showSeekyModalGrepQuickPick(context: vscode.ExtensionConte
                 preview: false,
                 selection: new vscode.Range(line, col, line, col),
             });
+            trackQuerySelection(lastQuery, selectedItem.filePath);
             quickPick.hide();
         } catch (error) {
             log.error('Seeky modal grep failed to open selected match.', error);

@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import type { FFSearchResult } from './searchProvider';
 import {
+    readGitDiffPreview,
     readFilePreview,
     searchFiles,
     searchGitModifiedFiles,
@@ -26,6 +27,7 @@ interface SeekyWebviewControllerOptions {
     readonly webview: vscode.Webview;
     readonly workspacePath: string;
     readonly getDefaultViewColumn: () => vscode.ViewColumn;
+    readonly getSourceUri: () => vscode.Uri | undefined;
     readonly closeHost: () => void;
     readonly defaultDisposeOnOpen: boolean;
     readonly beforeHostDispose?: () => void;
@@ -44,9 +46,9 @@ function getNonce(): string {
 
 function getFontFamily(): string {
     const config = vscode.workspace.getConfiguration('seeky');
-    const font = config.get<string>('fontFamily', 'Monaspace Neon');
-    if (font === 'System Default') {
-        return 'var(--vscode-font-family, system-ui, sans-serif)';
+    const font = config.get<string>('fontFamily', 'Editor Font');
+    if (font === 'Editor Font') {
+        return 'var(--vscode-editor-font-family, monospace)';
     }
 
     return `'${font.replace(/\s/g, '')}', var(--vscode-editor-font-family, monospace)`;
@@ -330,20 +332,22 @@ class SeekyWebviewController {
             }
             onDone(false);
         } else if (mode === 'symbols') {
-            const editor = vscode.window.activeTextEditor;
-            if (editor) {
+            const sourceUri = this.options.getSourceUri()
+                ?? vscode.window.activeTextEditor?.document.uri;
+            if (sourceUri) {
                 const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>(
                     'vscode.executeDocumentSymbolProvider',
-                    editor.document.uri
+                    sourceUri
                 );
                 if (symbols) {
+                    const sourcePath = sourceUri.fsPath;
                     const flatten = (s: vscode.DocumentSymbol[], container?: string) => {
                         s.forEach(sym => {
                             if (sym.name.toLowerCase().includes(query.toLowerCase())) {
                                 items.push({
                                     type: 'symbol',
-                                    file: editor.document.uri.fsPath,
-                                    relativePath: vscode.workspace.asRelativePath(editor.document.uri.fsPath),
+                                    file: sourcePath,
+                                    relativePath: vscode.workspace.asRelativePath(sourcePath),
                                     line: sym.range.start.line + 1,
                                     col: sym.range.start.character + 1,
                                     text: sym.name,
@@ -364,14 +368,16 @@ class SeekyWebviewController {
     private sendPreview(item: FFSearchResult): void {
         const targetLine = item.type === 'grep' || item.type === 'symbol' ? item.line : 1;
         const targetCol = item.type === 'grep' || item.type === 'symbol' ? item.col : 1;
-        const { content, startLine, stats } = readFilePreview(item.file, this.options.workspacePath, targetLine);
+        const preview = item.type === 'file' && item.source === 'git-modified'
+            ? readGitDiffPreview(item.file, this.options.workspacePath)
+            : readFilePreview(item.file, this.options.workspacePath, targetLine);
         this.options.webview.postMessage({
             command: 'preview',
             item: { file: item.file, line: targetLine, col: targetCol },
-            content,
+            content: preview.content,
             targetLine,
-            startLine,
-            stats,
+            startLine: preview.startLine,
+            stats: preview.stats,
         });
     }
 
@@ -441,6 +447,7 @@ export class ModalSearchPanel {
             webview: this.panel.webview,
             workspacePath: this.workspacePath,
             getDefaultViewColumn: () => this.originViewColumn,
+            getSourceUri: () => this.originEditor?.uri,
             closeHost: () => this.panel.dispose(),
             defaultDisposeOnOpen: true,
             beforeHostDispose: () => {
@@ -542,6 +549,7 @@ export class SeekySidebarViewProvider implements vscode.WebviewViewProvider {
             webview: webviewView.webview,
             workspacePath,
             getDefaultViewColumn: () => vscode.ViewColumn.Active,
+            getSourceUri: () => vscode.window.activeTextEditor?.document.uri,
             closeHost: () => {
                 void vscode.commands.executeCommand('workbench.action.closeSidebar');
             },
