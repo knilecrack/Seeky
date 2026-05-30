@@ -9,8 +9,16 @@ import {
 } from './commands/currentTabFuzzy';
 import { showSeekyModalQuickPick } from './commands/modalQuickPick';
 import { showSeekyModalGrepQuickPick } from './commands/modalGrep';
+import { SEEKY_PREVIEW_SCHEME, SeekyPreviewProvider } from './preview/previewProvider';
 
 export function activate(context: vscode.ExtensionContext): void {
+    context.subscriptions.push(
+        vscode.workspace.registerTextDocumentContentProvider(
+            SEEKY_PREVIEW_SCHEME,
+            new SeekyPreviewProvider(),
+        ),
+    );
+
     // MRU Tracking for Recent Files
 
     context.subscriptions.push(

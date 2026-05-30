@@ -2,7 +2,7 @@
   "name": "seeky",
   "displayName": "Seeky",
   "description": "Telescope-inspired modal search using ripgrep/fff — live grep and file finder with preview",
-  "version": "0.1.2",
+  "version": "0.1.4",
   "publisher": "knilecrack",
   "engines": {
     "vscode": "^1.95.0"
@@ -128,16 +128,16 @@
         },
         "seeky.fontFamily": {
           "type": "string",
-          "default": "Monaspace Neon",
+          "default": "Editor Font",
           "enum": [
+            "Editor Font",
             "Monaspace Argon",
             "Monaspace Krypton",
             "Monaspace Neon",
             "Monaspace Radon",
-            "Monaspace Xenon",
-            "System Default"
+            "Monaspace Xenon"
           ],
-          "description": "The font family used in the Seeky modal."
+          "description": "The font family used in the Seeky modal. Defaults to the editor font."
         }
       }
     }

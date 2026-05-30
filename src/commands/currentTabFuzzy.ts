@@ -4,9 +4,28 @@ import { AUTO_PREVIEW_DELAY_MS, type CurrentTabMatchItem, type FuzzyScope, NO_MA
 import { getInitialFuzzyQuery, nextFuzzyScope } from '../fuzzy/matcher';
 import { buildCurrentTabItems, buildOpenBufferItems } from '../fuzzy/itemBuilders';
 import { CYCLE_SCOPE_BUTTON, REFRESH_BUTTON } from '../ui/buttons';
+import { PreviewDecorations } from '../ui/previewDecorations';
+import { SEEKY_PREVIEW_SCHEME, toPreviewUri } from '../preview/previewProvider';
 
 let activeCurrentTabQuickPick: vscode.QuickPick<CurrentTabMatchItem> | undefined;
 let toggleActiveFuzzyScope: (() => void) | undefined;
+
+async function closeSeekyPreviewTabs(): Promise<void> {
+    const tabsToClose: vscode.Tab[] = [];
+    for (const group of vscode.window.tabGroups.all) {
+        for (const tab of group.tabs) {
+            if (
+                tab.input instanceof vscode.TabInputText &&
+                tab.input.uri.scheme === SEEKY_PREVIEW_SCHEME
+            ) {
+                tabsToClose.push(tab);
+            }
+        }
+    }
+    if (tabsToClose.length > 0) {
+        await vscode.window.tabGroups.close(tabsToClose);
+    }
+}
 
 async function showCurrentTabGrepPicker(initialQuery: string, scope: FuzzyScope): Promise<void> {
     const editor = vscode.window.activeTextEditor;
@@ -26,7 +45,7 @@ async function showCurrentTabGrepPicker(initialQuery: string, scope: FuzzyScope)
 
     const toggleScope = () => {
         currentScope = nextFuzzyScope(currentScope);
-        clearPreviewDecorations();
+        preview.clear();
         updatePickerChrome();
         void refreshItems();
         scheduleAutoPreview();
@@ -49,13 +68,9 @@ async function showCurrentTabGrepPicker(initialQuery: string, scope: FuzzyScope)
     quickPick.matchOnDetail = true;
     quickPick.value = initialQuery;
 
-    const previewDecoration = vscode.window.createTextEditorDecorationType({
-        backgroundColor: new vscode.ThemeColor('editor.findMatchHighlightBackground'),
-        border: '1px solid var(--vscode-editor-findMatchBorder)',
-    });
+    const preview = new PreviewDecorations();
     let autoPreviewTimer: ReturnType<typeof setTimeout> | undefined;
     let refreshVersion = 0;
-    let lastPreviewEditor: vscode.TextEditor | undefined;
 
     const clearPreviewTimer = () => {
         if (autoPreviewTimer) {
@@ -64,39 +79,28 @@ async function showCurrentTabGrepPicker(initialQuery: string, scope: FuzzyScope)
         }
     };
 
-    const clearPreviewDecorations = () => {
-        if (lastPreviewEditor) {
-            lastPreviewEditor.setDecorations(previewDecoration, []);
-            lastPreviewEditor = undefined;
-            return;
-        }
-
-        const activeEditor = vscode.window.activeTextEditor;
-        if (activeEditor) {
-            activeEditor.setDecorations(previewDecoration, []);
-        }
-    };
-
     const jumpToItem = async (item: CurrentTabMatchItem, closeOnJump: boolean): Promise<void> => {
         if (item.line === NO_MATCH_LINE) {
             return;
         }
 
-        const targetDocument = item.fileUri.toString() === editor.document.uri.toString()
-            ? editor.document
-            : await vscode.workspace.openTextDocument(item.fileUri);
+        const targetUri = closeOnJump ? item.fileUri : toPreviewUri(item.fileUri.fsPath);
+        const targetDocument = !closeOnJump
+            ? await vscode.workspace.openTextDocument(targetUri)
+            : item.fileUri.toString() === editor.document.uri.toString()
+                ? editor.document
+                : await vscode.workspace.openTextDocument(item.fileUri);
 
         const targetEditor = await vscode.window.showTextDocument(targetDocument, {
             selection: new vscode.Range(item.line, item.col, item.line, item.col),
             preview: !closeOnJump,
             preserveFocus: !closeOnJump,
         });
-        lastPreviewEditor = targetEditor;
 
         const ranges = item.matchCols?.length
             ? item.matchCols.map(col => new vscode.Range(item.line, col, item.line, col + 1))
             : [new vscode.Range(item.line, item.col, item.line, item.col + 1)];
-        targetEditor.setDecorations(previewDecoration, ranges);
+        preview.setHighlight(targetEditor, ranges);
 
         if (closeOnJump) {
             quickPick.hide();
@@ -106,14 +110,14 @@ async function showCurrentTabGrepPicker(initialQuery: string, scope: FuzzyScope)
     const scheduleAutoPreview = () => {
         clearPreviewTimer();
         if (!quickPick.value.trim()) {
-            clearPreviewDecorations();
+            preview.clear();
             return;
         }
 
         autoPreviewTimer = setTimeout(async () => {
             const candidate = quickPick.activeItems[0] ?? quickPick.items[0];
             if (!candidate || candidate.line === NO_MATCH_LINE) {
-                clearPreviewDecorations();
+                preview.clear();
                 return;
             }
 
@@ -168,7 +172,7 @@ async function showCurrentTabGrepPicker(initialQuery: string, scope: FuzzyScope)
     quickPick.onDidChangeActive(items => {
         const activeItem = items[0];
         if (!activeItem) {
-            clearPreviewDecorations();
+            preview.clear();
             return;
         }
 
@@ -194,9 +198,10 @@ async function showCurrentTabGrepPicker(initialQuery: string, scope: FuzzyScope)
 
     quickPick.onDidHide(() => {
         clearPreviewTimer();
-        clearPreviewDecorations();
-        previewDecoration.dispose();
+        preview.clear();
+        preview.dispose();
         quickPick.dispose();
+        void closeSeekyPreviewTabs();
         if (activeCurrentTabQuickPick === quickPick) {
             activeCurrentTabQuickPick = undefined;
         }
