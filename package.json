@@ -24,7 +24,31 @@
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "seeky",
+          "title": "Seeky",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "seeky": [
+        {
+          "type": "webview",
+          "id": "seeky.sidebar",
+          "name": "Search",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
     "commands": [
+      {
+        "command": "seeky.openSidebar",
+        "title": "Open Sidebar Search",
+        "category": "Seeky"
+      },
       {
         "command": "seeky.openModal",
         "title": "Open Modal",
@@ -84,6 +108,46 @@
         "command": "seeky.toggleFuzzyScope",
         "title": "Toggle Fuzzy Scope",
         "category": "Seeky"
+      },
+      {
+        "command": "seeky.sidebar.grep",
+        "title": "Sidebar: Live Grep",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.sidebar.findFiles",
+        "title": "Sidebar: Find Files",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.sidebar.recentFiles",
+        "title": "Sidebar: Recent Files",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.sidebar.openBuffers",
+        "title": "Sidebar: Open Buffers",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.sidebar.documentSymbols",
+        "title": "Sidebar: Document Symbols",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.sidebar.workspaceSymbols",
+        "title": "Sidebar: Workspace Symbols",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.sidebar.gitModified",
+        "title": "Sidebar: Git Modified Files",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.sidebar.searchWordUnderCursor",
+        "title": "Sidebar: Search Word Under Cursor",
+        "category": "Seeky"
       }
     ],
     "keybindings": [
@@ -116,6 +180,24 @@
         "key": "alt+shift+o",
         "mac": "alt+shift+o",
         "when": "inQuickOpen"
+      },
+      {
+        "command": "seeky.sidebar.grep",
+        "key": "ctrl+alt+g",
+        "mac": "cmd+alt+g",
+        "when": "!terminalFocus"
+      },
+      {
+        "command": "seeky.sidebar.findFiles",
+        "key": "ctrl+alt+p",
+        "mac": "cmd+alt+p",
+        "when": "!terminalFocus"
+      },
+      {
+        "command": "seeky.sidebar.searchWordUnderCursor",
+        "key": "ctrl+alt+h",
+        "mac": "cmd+alt+h",
+        "when": "editorFocus"
       }
     ],
     "configuration": {

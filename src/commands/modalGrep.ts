@@ -247,7 +247,7 @@ export async function showSeekyModalGrepQuickPick(context: vscode.ExtensionConte
     });
 
     quickPick.onDidAccept(async () => {
-        const selectedItem = quickPick.selectedItems[0] ?? quickPick.activeItems[0];
+        const selectedItem = quickPick.selectedItems[0] ?? quickPick.activeItems[0] ?? quickPick.items.find(item => item.filePath);
         if (!selectedItem?.filePath) {
             return;
         }
