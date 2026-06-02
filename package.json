@@ -2,10 +2,13 @@
   "name": "seeky",
   "displayName": "Seeky",
   "description": "Telescope-inspired modal search using ripgrep/fff — live grep and file finder with preview",
-  "version": "0.0.1",
+  "version": "0.1.4",
   "publisher": "knilecrack",
   "engines": {
-    "vscode": "^1.120.0"
+    "vscode": "^1.95.0"
+  },
+  "repository": {
+    "url": "https://github.com/knilecvrack/Seeky"
   },
   "categories": [
     "Other"
@@ -15,26 +18,141 @@
     "search",
     "telescope",
     "modal",
-    "grep"
+    "grep",
+    "fff"
   ],
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "seeky",
+          "title": "Seeky",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "seeky": [
+        {
+          "type": "webview",
+          "id": "seeky.sidebar",
+          "name": "Search",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
     "commands": [
       {
-        "command": "seeky.liveGrep",
-        "title": "Live Grep (ripgrep)",
+        "command": "seeky.openSidebar",
+        "title": "Open Sidebar Search",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.openModal",
+        "title": "Open Modal",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.openModalGrep",
+        "title": "Open Modal Grep",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.grep",
+        "title": "Live Grep",
         "category": "Seeky"
       },
       {
         "command": "seeky.findFiles",
-        "title": "Find Files (ripgrep)",
+        "title": "Find Files",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.recentFiles",
+        "title": "Recent Files",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.openBuffers",
+        "title": "Open Buffers",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.documentSymbols",
+        "title": "Document Symbols",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.searchWordUnderCursor",
+        "title": "Search Word Under Cursor",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.grepCurrentTab",
+        "title": "Fast Fuzzy: Current Buffer",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.searchThroughGitModifiedFiles",
+        "title": "Search Git Modified Files",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.fuzzyOpenBuffers",
+        "title": "Fast Fuzzy: Open Buffers",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.toggleFuzzyScope",
+        "title": "Toggle Fuzzy Scope",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.sidebar.grep",
+        "title": "Sidebar: Live Grep",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.sidebar.findFiles",
+        "title": "Sidebar: Find Files",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.sidebar.recentFiles",
+        "title": "Sidebar: Recent Files",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.sidebar.openBuffers",
+        "title": "Sidebar: Open Buffers",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.sidebar.documentSymbols",
+        "title": "Sidebar: Document Symbols",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.sidebar.workspaceSymbols",
+        "title": "Sidebar: Workspace Symbols",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.sidebar.gitModified",
+        "title": "Sidebar: Git Modified Files",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.sidebar.searchWordUnderCursor",
+        "title": "Sidebar: Search Word Under Cursor",
         "category": "Seeky"
       }
     ],
     "keybindings": [
       {
-        "command": "seeky.liveGrep",
+        "command": "seeky.grep",
         "key": "ctrl+shift+g",
         "mac": "cmd+shift+g",
         "when": "!terminalFocus"
@@ -44,6 +162,42 @@
         "key": "ctrl+shift+alt+p",
         "mac": "cmd+shift+alt+p",
         "when": "!terminalFocus"
+      },
+      {
+        "command": "seeky.searchWordUnderCursor",
+        "key": "ctrl+shift+h",
+        "mac": "cmd+shift+h",
+        "when": "editorFocus"
+      },
+      {
+        "command": "seeky.searchThroughGitModifiedFiles",
+        "key": "ctrl+alt+s ctrl+alt+g",
+        "mac": "cmd+alt+s cmd+alt+g",
+        "when": "!terminalFocus"
+      },
+      {
+        "command": "seeky.toggleFuzzyScope",
+        "key": "alt+shift+o",
+        "mac": "alt+shift+o",
+        "when": "inQuickOpen"
+      },
+      {
+        "command": "seeky.sidebar.grep",
+        "key": "ctrl+alt+g",
+        "mac": "cmd+alt+g",
+        "when": "!terminalFocus"
+      },
+      {
+        "command": "seeky.sidebar.findFiles",
+        "key": "ctrl+alt+p",
+        "mac": "cmd+alt+p",
+        "when": "!terminalFocus"
+      },
+      {
+        "command": "seeky.sidebar.searchWordUnderCursor",
+        "key": "ctrl+alt+h",
+        "mac": "cmd+alt+h",
+        "when": "editorFocus"
       }
     ],
     "configuration": {
@@ -53,6 +207,19 @@
           "type": "number",
           "default": 200,
           "description": "Maximum number of search results to display."
+        },
+        "seeky.fontFamily": {
+          "type": "string",
+          "default": "Editor Font",
+          "enum": [
+            "Editor Font",
+            "Monaspace Argon",
+            "Monaspace Krypton",
+            "Monaspace Neon",
+            "Monaspace Radon",
+            "Monaspace Xenon"
+          ],
+          "description": "The font family used in the Seeky modal. Defaults to the editor font."
         }
       }
     }
@@ -61,12 +228,31 @@
     "vscode:prepublish": "npm run build",
     "build": "node esbuild.js",
     "watch": "node esbuild.js --watch",
-    "compile": "tsc -p ./ --noEmit"
+    "lint": "biome lint .",
+    "compile": "tsc -p ./ --noEmit",
+    "version:major": "npm version major --no-git-tag-version",
+    "version:minor": "npm version minor --no-git-tag-version",
+    "version:patch": "npm version patch --no-git-tag-version",
+    "package": "npm run version:patch && vsce package"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.4.15",
+    "@fontsource/monaspace-argon": "^5.2.5",
+    "@fontsource/monaspace-krypton": "^5.2.5",
+    "@fontsource/monaspace-neon": "^5.2.5",
+    "@fontsource/monaspace-radon": "^5.2.5",
+    "@fontsource/monaspace-xenon": "^5.2.5",
+    "@tailwindcss/cli": "^4.3.0",
     "@types/node": "^20.19.41",
     "@types/vscode": "^1.95.0",
-    "esbuild": "^0.20.2",
+    "@vscode/codicons": "^0.0.45",
+    "@vscode/vsce": "^3.9.1",
+    "esbuild": "^0.28.0",
+    "tailwindcss": "^4.3.0",
     "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "@ff-labs/fff-node": "^0.8.1",
+    "shiki": "^4.0.2"
   }
 }
