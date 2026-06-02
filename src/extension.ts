@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { ModalSearchPanel } from './webviewPanel';
+import { ModalSearchPanel, SeekySidebarViewProvider } from './webviewPanel';
 import { destroyFff } from './searchProvider';
 import { SeekySearchOptions } from './types';
 import {
@@ -12,6 +12,11 @@ import { showSeekyModalGrepQuickPick } from './commands/modalGrep';
 import { SEEKY_PREVIEW_SCHEME, SeekyPreviewProvider } from './preview/previewProvider';
 
 export function activate(context: vscode.ExtensionContext): void {
+    const sidebarProvider = new SeekySidebarViewProvider(context);
+    context.subscriptions.push(
+        vscode.window.registerWebviewViewProvider(SeekySidebarViewProvider.viewType, sidebarProvider)
+    );
+
     context.subscriptions.push(
         vscode.workspace.registerTextDocumentContentProvider(
             SEEKY_PREVIEW_SCHEME,
@@ -33,6 +38,9 @@ export function activate(context: vscode.ExtensionContext): void {
     );
 
     context.subscriptions.push(
+        vscode.commands.registerCommand('seeky.openSidebar', () => {
+            void sidebarProvider.reveal('grep');
+        }),
         vscode.commands.registerCommand('seeky.openModal', () => {
             void showSeekyModalQuickPick(context);
         }),
@@ -71,6 +79,42 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand('seeky.grepCurrentTab', () => runCurrentTabGrepCommand()),
         vscode.commands.registerCommand('seeky.fuzzyOpenBuffers', () => runOpenBuffersFuzzyCommand()),
         vscode.commands.registerCommand('seeky.toggleFuzzyScope', () => toggleQuickPickFuzzyScope())
+    );
+
+    // Sidebar commands — persistent side panel that stays open after opening results
+    context.subscriptions.push(
+        vscode.commands.registerCommand('seeky.sidebar.grep', () => {
+            void sidebarProvider.reveal('grep');
+        }),
+        vscode.commands.registerCommand('seeky.sidebar.findFiles', () => {
+            void sidebarProvider.reveal('files');
+        }),
+        vscode.commands.registerCommand('seeky.sidebar.recentFiles', () => {
+            void sidebarProvider.reveal('recent');
+        }),
+        vscode.commands.registerCommand('seeky.sidebar.openBuffers', () => {
+            void sidebarProvider.reveal('buffers');
+        }),
+        vscode.commands.registerCommand('seeky.sidebar.documentSymbols', () => {
+            void sidebarProvider.reveal('symbols');
+        }),
+        vscode.commands.registerCommand('seeky.sidebar.workspaceSymbols', () => {
+            void sidebarProvider.reveal('workspace-symbols');
+        }),
+        vscode.commands.registerCommand('seeky.sidebar.gitModified', () => {
+            void sidebarProvider.reveal('git-modified');
+        }),
+        vscode.commands.registerCommand('seeky.sidebar.searchWordUnderCursor', () => {
+            const editor = vscode.window.activeTextEditor;
+            const word = editor
+                ? editor.document.getText(
+                    editor.selection.isEmpty
+                        ? editor.document.getWordRangeAtPosition(editor.selection.active)
+                        : editor.selection
+                ) ?? ''
+                : '';
+            void sidebarProvider.reveal('grep', word);
+        })
     );
 }
 

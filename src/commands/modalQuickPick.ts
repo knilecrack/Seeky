@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
+import { getInitialFuzzyQuery } from '../fuzzy/matcher';
 import { log } from '../logger';
 import { searchFiles, trackQuerySelection } from '../searchProvider';
-import { getInitialFuzzyQuery } from '../fuzzy/matcher';
 import type { ModalFilePickItem } from '../types';
 
 export async function showSeekyModalQuickPick(context: vscode.ExtensionContext): Promise<void> {
@@ -107,7 +107,7 @@ export async function showSeekyModalQuickPick(context: vscode.ExtensionContext):
     });
 
     quickPick.onDidAccept(async () => {
-        const selected = quickPick.selectedItems[0] ?? quickPick.activeItems[0];
+        const selected = quickPick.selectedItems[0] ?? quickPick.activeItems[0] ?? quickPick.items.find(item => item.filePath);
         if (!selected?.filePath) {
             return;
         }
