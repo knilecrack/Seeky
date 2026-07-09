@@ -158,8 +158,7 @@ function getHtmlContent(
             <!-- Results List -->
             <div id="results-col">
                 <div id="results-list" class="flex-1 overflow-y-auto relative">
-                    <div id="results-spacer" style="pointer-events: none;"></div>
-                    <div id="results-content" class="w-full" style="position: absolute; top: 0; left: 0; right: 0;"></div>
+                    <div id="results-content" class="w-full"></div>
                 </div>
             </div>
 
@@ -206,7 +205,7 @@ function getHtmlContent(
     </div>
     <script nonce="${nonce}">
         window.INITIAL_MODE = "${mode}";
-        window.INITIAL_QUERY = "${initialQuery}";
+        window.INITIAL_QUERY = "${initialQuery.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}";
         window.MEDIA_URI = "${webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media'))}";
     </script>
     <script nonce="${nonce}" src="${webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'icon-map.js'))}"></script>
@@ -217,6 +216,7 @@ function getHtmlContent(
 
 class SeekyWebviewController {
     private cancelSearch: (() => void) | undefined;
+    private previewCounter = 0;
 
     constructor(private readonly options: SeekyWebviewControllerOptions) { }
 
@@ -274,6 +274,34 @@ class SeekyWebviewController {
         const onDone = (cancelled: boolean, duration?: number) => {
             if (cancelled) return;
             const finalDuration = duration ?? (performance.now() - start);
+
+            if (query.trim() && items.length > 0) {
+                const lowerQuery = query.toLowerCase();
+                
+                const getScore = (item: FFSearchResult) => {
+                    if (item.type === 'file') {
+                        const pathLower = item.relativePath.toLowerCase();
+                        const parts = pathLower.split(/[/\\]/);
+                        const basename = parts[parts.length - 1] || '';
+                        
+                        if (basename === lowerQuery) return 100;
+                        if (basename.startsWith(lowerQuery)) return 90;
+                        if (basename.includes(lowerQuery)) return 80;
+                        if (pathLower.includes(lowerQuery)) return 70;
+                    } else if (item.type === 'grep' || item.type === 'symbol') {
+                        if (item.text.toLowerCase().includes(lowerQuery)) return 80;
+                    }
+                    return 0;
+                };
+
+                // Apply stable sort to boost exact matches, keeping fff-node's internal order for ties
+                items.sort((a, b) => {
+                    const scoreA = getScore(a);
+                    const scoreB = getScore(b);
+                    return scoreB - scoreA;
+                });
+            }
+
             this.options.webview.postMessage({ command: 'results', items, done: true, capped: false, duration: finalDuration });
         };
 
@@ -283,11 +311,11 @@ class SeekyWebviewController {
         const currentFile = vscode.window.activeTextEditor?.document.uri.fsPath;
 
         if (mode === 'grep') {
-            this.cancelSearch = searchGrep(query, this.options.workspacePath, grepMode, storagePath, currentFile, onResult, onDone);
+            this.cancelSearch = searchGrep(query, this.options.workspacePath, grepMode, storagePath, currentFile, undefined, onResult, onDone);
         } else if (mode === 'files') {
             this.cancelSearch = searchFiles(query, this.options.workspacePath, storagePath, currentFile, onResult, onDone);
         } else if (mode === 'git-modified') {
-            this.cancelSearch = searchGitModifiedFiles(query, this.options.workspacePath, onResult, onDone);
+            this.cancelSearch = searchGitModifiedFiles(query, this.options.workspacePath, storagePath, onResult, onDone);
         } else if (mode === 'recent') {
             const mru = this.options.context.workspaceState.get<string[]>('mruFiles', []);
             mru.forEach(file => {
@@ -312,25 +340,8 @@ class SeekyWebviewController {
             });
             onDone(false);
         } else if (mode === 'workspace-symbols') {
-            const symbols = await vscode.commands.executeCommand<vscode.SymbolInformation[]>(
-                'vscode.executeWorkspaceSymbolProvider',
-                query
-            );
-            if (symbols) {
-                symbols.forEach(sym => {
-                    items.push({
-                        type: 'symbol',
-                        file: sym.location.uri.fsPath,
-                        relativePath: vscode.workspace.asRelativePath(sym.location.uri.fsPath),
-                        line: sym.location.range.start.line + 1,
-                        col: sym.location.range.start.character + 1,
-                        text: sym.name,
-                        kind: vscode.SymbolKind[sym.kind],
-                        ...(sym.containerName ? { containerName: sym.containerName } : {})
-                    });
-                });
-            }
-            onDone(false);
+            // Note: fff-node definition classifier acts as a fast fuzzy grep with isDefinition true.
+            this.cancelSearch = searchGrep(query, this.options.workspacePath, grepMode, storagePath, currentFile, { classifyDefinitions: true }, onResult, onDone);
         } else if (mode === 'symbols') {
             const sourceUri = this.options.getSourceUri()
                 ?? vscode.window.activeTextEditor?.document.uri;
@@ -365,12 +376,21 @@ class SeekyWebviewController {
         }
     }
 
-    private sendPreview(item: FFSearchResult): void {
+    private async sendPreview(item: FFSearchResult): Promise<void> {
         const targetLine = item.type === 'grep' || item.type === 'symbol' ? item.line : 1;
         const targetCol = item.type === 'grep' || item.type === 'symbol' ? item.col : 1;
+        
+        // Safely extract gitStatus since all result types now have it.
+        const gitStatus = (item as any).gitStatus as string | undefined;
+
+        const currentCounter = ++this.previewCounter;
+
         const preview = item.type === 'file' && item.source === 'git-modified'
-            ? readGitDiffPreview(item.file, this.options.workspacePath)
-            : readFilePreview(item.file, this.options.workspacePath, targetLine);
+            ? await readGitDiffPreview(item.file, this.options.workspacePath, gitStatus)
+            : await readFilePreview(item.file, targetLine, gitStatus);
+            
+        if (this.previewCounter !== currentCounter) return;
+
         this.options.webview.postMessage({
             command: 'preview',
             item: { file: item.file, line: targetLine, col: targetCol },

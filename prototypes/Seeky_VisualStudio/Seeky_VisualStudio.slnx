@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="../visual-studio-2026/host/Seeky.FffNative/Seeky.FffNative.csproj" />
+  <Project Path="VSSeeky/VSSeeky.csproj">
+    <Deploy Solution="Debug|*" />
+  </Project>
+</Solution>

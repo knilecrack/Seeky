@@ -74,7 +74,8 @@ export function activate(context: vscode.ExtensionContext): void {
                         : editor.selection
                 ) ?? ''
                 : '';
-            ModalSearchPanel.show(context, SeekySearchOptions.Grep, word);
+            const query = word ? `\\p ${word}` : '';
+            ModalSearchPanel.show(context, SeekySearchOptions.Grep, query);
         }),
         vscode.commands.registerCommand('seeky.grepCurrentTab', () => runCurrentTabGrepCommand()),
         vscode.commands.registerCommand('seeky.fuzzyOpenBuffers', () => runOpenBuffersFuzzyCommand()),
@@ -113,7 +114,8 @@ export function activate(context: vscode.ExtensionContext): void {
                         : editor.selection
                 ) ?? ''
                 : '';
-            void sidebarProvider.reveal('grep', word);
+            const query = word ? `\\p ${word}` : '';
+            void sidebarProvider.reveal('grep', query);
         })
     );
 }

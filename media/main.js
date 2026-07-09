@@ -128,7 +128,7 @@
             const container = document.getElementById('mode-tabs-container');
             const slider = container ? container.querySelector('.tab-slider') : null;
             if (slider) {
-                slider.style.left = `${activeTab.offsetLeft}px`;
+                slider.style.transform = `translateX(${activeTab.offsetLeft}px)`;
                 slider.style.width = `${activeTab.offsetWidth}px`;
             }
         }
@@ -161,15 +161,20 @@
             const container = document.getElementById('mode-tabs-container');
             const slider = container ? container.querySelector('.tab-slider') : null;
             if (slider) {
-                slider.style.left = `${activeTab.offsetLeft}px`;
+                slider.style.transform = `translateX(${activeTab.offsetLeft}px)`;
                 slider.style.width = `${activeTab.offsetWidth}px`;
             }
         }
     });
 
     // ── Search Logic ──────────────────────────────────────────────────────────
+    let searchDebounceTimeout = null;
+
     searchInput.addEventListener('input', () => {
-        triggerSearch();
+        if (searchDebounceTimeout) clearTimeout(searchDebounceTimeout);
+        searchDebounceTimeout = setTimeout(() => {
+            triggerSearch();
+        }, 50);
     });
 
     function triggerSearch() {
@@ -227,13 +232,10 @@
     // ── Render Results ────────────────────────────────────────────────────────
     function renderResults(items, capped = false) {
         navItems = [];
-        virtualItems = [];
-        let currentTop = 0;
 
         if (items.length === 0) {
             selectedIndex = -1;
             resultCount.textContent = '0 / 0';
-            resultsSpacer.style.height = '0px';
             resultsContent.innerHTML = '';
             clearPreview();
             return;
@@ -241,68 +243,29 @@
 
         resultCount.textContent = `${items.length}${capped ? '+' : ''}`;
 
+        let html = '';
         items.forEach((item, i) => {
             navItems.push({ type: 'match', item });
             const isFirstInGroup = currentMode !== 'grep' || i === 0 || item.relativePath !== items[i - 1]?.relativePath;
-            const height = isFirstInGroup ? RESULT_ITEM_HEIGHT : GREP_MATCH_ONLY_HEIGHT;
-            virtualItems.push({ type: 'match', data: item, index: i, top: currentTop, height, isFirstInGroup });
-            currentTop += height;
-        });
-
-        totalHeight = currentTop;
-
-        // Reset selection on filter update
-        selectedIndex = items.length > 0 ? 0 : -1;
-        resultsList.scrollTop = 0;
-
-        refreshVirtualList();
-
-        if (navItems.length > 0 && selectedIndex >= 0) {
-            updatePreviewInfo(navItems[selectedIndex].item);
-        }
-    }
-
-    resultsList.addEventListener('scroll', refreshVirtualList);
-
-    function refreshVirtualList() {
-        const scrollTop = resultsList.scrollTop;
-        const viewportHeight = resultsList.clientHeight;
-        const buffer = 10;
-
-        let startIdx = virtualItems.findIndex(item => item.top + item.height > scrollTop);
-        if (startIdx === -1) startIdx = 0;
-        startIdx = Math.max(0, startIdx - buffer);
-
-        let endIdx = virtualItems.findIndex(item => item.top > scrollTop + viewportHeight);
-        if (endIdx === -1) endIdx = virtualItems.length - 1;
-        endIdx = Math.min(virtualItems.length - 1, endIdx + buffer);
-
-        const visibleItems = virtualItems.slice(startIdx, endIdx + 1);
-
-        resultsSpacer.style.height = `${totalHeight}px`;
-        resultsContent.style.transform = `translateY(${virtualItems[startIdx]?.top || 0}px)`;
-
-        resultsContent.innerHTML = visibleItems.map(v => {
-            const match = v.data;
-            const sel = v.index === selectedIndex ? ' selected result-selected' : '';
-            const { fname, dir } = splitPath(match.relativePath || '');
+            
+            const sel = i === selectedIndex ? ' selected result-selected' : '';
+            const { fname, dir } = splitPath(item.relativePath || '');
             const truncatedDir = truncatePath(dir, PATH_TRUNCATE_LEN);
 
             let matchHtml = '';
             let hlFname = escHtml(fname || '');
 
             if (currentMode === 'grep' || currentMode === 'symbols' || currentMode === 'workspace-symbols') {
-                // Determine highlight method based on whether matchRanges exist
                 let highlight;
-                const matchText = match.text || '';
-                if (match.matchRanges && match.matchRanges.length > 0) {
-                    highlight = highlightRanges(matchText.trimStart(), match.matchRanges);
+                const matchText = item.text || '';
+                if (item.matchRanges && item.matchRanges.length > 0) {
+                    highlight = highlightRanges(matchText.trimStart(), item.matchRanges);
                 } else {
                     highlight = highlightText(matchText.trimStart(), searchInput.value);
                 }
 
                 matchHtml = `<div class="result-match-row">
-                    <span class="result-line-num">${match.line}</span>
+                    <span class="result-line-num">${item.line}</span>
                     <span class="result-colon">:</span>
                     <span class="result-text truncate">${highlight}</span>
                 </div>`;
@@ -310,16 +273,16 @@
                 hlFname = highlightText(fname || '', searchInput.value);
             }
 
-            // Grep mode: non-first items in a file group render only the match row
-            if (currentMode === 'grep' && !v.isFirstInGroup) {
-                return `<div class="result-item result-item-match-only${sel}" data-index="${v.index}" style="height:${v.height}px">
+            if (currentMode === 'grep' && !isFirstInGroup) {
+                html += `<div class="result-item result-item-match-only${sel}" data-index="${i}">
                     ${matchHtml}
                 </div>`;
+                return;
             }
 
             let iconHtml = '';
-            if ((currentMode === 'symbols' || currentMode === 'workspace-symbols') && match.kind) {
-                const iconClass = getSymbolIcon(match.kind);
+            if ((currentMode === 'symbols' || currentMode === 'workspace-symbols') && item.kind) {
+                const iconClass = getSymbolIcon(item.kind);
                 iconHtml = `<i class="codicon ${iconClass} result-file-icon"></i>`;
             } else {
                 const iconPathRaw = window.getRosePineIcon ? window.getRosePineIcon(fname || '') : 'icons/file.svg';
@@ -327,7 +290,7 @@
                 iconHtml = `<img src="${window.MEDIA_URI}/${iconPath}" class="result-file-icon" />`;
             }
 
-            return `<div class="result-item${sel}" data-index="${v.index}" style="height:${v.height}px">
+            html += `<div class="result-item${sel}" data-index="${i}">
                 <div class="result-file-row">
                     ${iconHtml}
                     <span class="result-filename truncate">${hlFname}</span>
@@ -335,37 +298,62 @@
                 </div>
                 ${matchHtml}
             </div>`;
-        }).join('');
-
-        resultsContent.querySelectorAll('.result-item').forEach((el) => {
-            el.addEventListener('click', () => selectResult(parseInt(/** @type {HTMLElement} */(el).dataset.index, 10)));
-            el.addEventListener('dblclick', () => {
-                const idx = parseInt(/** @type {HTMLElement} */(el).dataset.index, 10);
-                selectResult(idx);
-                if (navItems[idx]) { openResult(navItems[idx].item); }
-            });
         });
+        
+        resultsContent.innerHTML = html;
+
+        selectedIndex = items.length > 0 ? 0 : -1;
+        resultsList.scrollTop = 0;
+
+        if (navItems.length > 0 && selectedIndex >= 0) {
+            updatePreviewInfo(navItems[selectedIndex].item);
+        }
     }
 
     function selectResult(index) {
         if (navItems.length === 0) { return; }
         selectedIndex = Math.max(0, Math.min(navItems.length - 1, index));
-        refreshVirtualList();
+        
+        resultsContent.querySelectorAll('.result-item').forEach(item => {
+            const idx = parseInt(item.dataset.index, 10);
+            if (idx === selectedIndex) {
+                item.classList.add('selected', 'result-selected');
+            } else {
+                item.classList.remove('selected', 'result-selected');
+            }
+        });
+        
         scrollToSelected();
         if (navItems[selectedIndex]) {
             updatePreviewInfo(navItems[selectedIndex].item);
         }
     }
 
+    resultsContent.addEventListener('click', (e) => {
+        const itemEl = e.target.closest('.result-item');
+        if (itemEl) {
+            selectResult(parseInt(itemEl.dataset.index, 10));
+        }
+    });
+
+    resultsContent.addEventListener('dblclick', (e) => {
+        const itemEl = e.target.closest('.result-item');
+        if (itemEl) {
+            const idx = parseInt(itemEl.dataset.index, 10);
+            selectResult(idx);
+            if (navItems[idx]) { openResult(navItems[idx].item); }
+        }
+    });
+
     function scrollToSelected() {
-        const item = virtualItems.find(v => v.index === selectedIndex);
-        if (!item) return;
+        const selectedEl = resultsContent.querySelector(`.result-item[data-index="${selectedIndex}"]`);
+        if (!selectedEl) return;
 
         const scrollTop = resultsList.scrollTop;
         const viewportHeight = resultsList.clientHeight;
 
-        const itemTop = item.top;
-        const itemBottom = itemTop + item.height;
+        const itemTop = selectedEl.offsetTop;
+        const itemBottom = itemTop + selectedEl.offsetHeight;
 
         if (itemTop < scrollTop) {
             resultsList.scrollTop = itemTop;
@@ -399,11 +387,17 @@
         if (badgeMtime) badgeMtime.classList.add('hidden');
     }
 
+    let previewDebounceTimeout = null;
+
     function updatePreviewInfo(item) {
         const { fname, dir } = splitPath(item.relativePath || '');
         previewFilename.textContent = fname;
         previewPath.textContent = dir;
-        vscode.postMessage({ command: 'preview', item });
+        
+        if (previewDebounceTimeout) clearTimeout(previewDebounceTimeout);
+        previewDebounceTimeout = setTimeout(() => {
+            vscode.postMessage({ command: 'preview', item });
+        }, 75);
     }
 
     // ── Syntax Highlighting ───────────────────────────────────────────────────
@@ -621,7 +615,7 @@
                 const slider = container ? container.querySelector('.tab-slider') : null;
                 if (slider) {
                     requestAnimationFrame(() => {
-                        slider.style.left = `${tab.offsetLeft}px`;
+                        slider.style.transform = `translateX(${tab.offsetLeft}px)`;
                         slider.style.width = `${tab.offsetWidth}px`;
                     });
                 }

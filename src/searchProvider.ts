@@ -1,10 +1,13 @@
-import { readFileSync, statSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, statSync, existsSync, mkdirSync, createReadStream, promises as fsPromises } from 'node:fs';
 import { join, dirname, relative } from 'node:path';
-import { execSync } from 'node:child_process';
+import { execSync, spawnSync, execFile } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
+import * as readline from 'node:readline';
+import { promisify } from 'node:util';
 import type { FileFinder, GrepMatch, FileItem } from '@ff-labs/fff-node';
 import { log } from './logger';
-import { spawnSync } from 'node:child_process';
+
+const execFileAsync = promisify(execFile);
 
 export interface GrepResult {
     type: 'grep';
@@ -14,6 +17,7 @@ export interface GrepResult {
     col: number;
     text: string;
     frecencyScore: number;
+    gitStatus?: string;
 }
 
 export interface FileResult {
@@ -22,6 +26,7 @@ export interface FileResult {
     relativePath: string;
     source?: 'git-modified';
     frecencyScore?: number;
+    gitStatus?: string;
 }
 
 export interface ISymbolResult {
@@ -33,6 +38,7 @@ export interface ISymbolResult {
     text: string;
     kind: string;
     containerName?: string;
+    gitStatus?: string;
 }
 
 export type FFSearchResult = GrepResult | FileResult | ISymbolResult;
@@ -70,22 +76,9 @@ async function getOrCreateFinder(basePath: string, storagePath?: string): Promis
         let frecencyDbPath: string | undefined;
         let historyDbPath: string | undefined;
 
-        // Sync with Neovim fff.nvim databases
-        const isWin = process.platform === 'win32';
-        const localAppData = process.env['LOCALAPPDATA'];
-        const home = process.env['HOME'] || process.env['USERPROFILE'] || '';
-
-        if (isWin && localAppData) {
-            frecencyDbPath = join(localAppData, 'nvim-data', 'fff_nvim', 'frecency.db');
-            historyDbPath = join(localAppData, 'nvim-data', 'fff_queries', 'history.db');
-        } else if (!isWin && home) {
-            frecencyDbPath = join(home, '.cache', 'nvim', 'fff_nvim', 'frecency.db');
-            historyDbPath = join(home, '.local', 'share', 'nvim', 'fff_queries', 'history.db');
-        } else if (storagePath) {
-            // Fallback to extension storage
-            frecencyDbPath = join(storagePath, 'frecency.db');
-            historyDbPath = join(storagePath, 'history.db');
-        }
+        const seekyDir = join(normalizedBasePath, '.vscode', 'seeky');
+        frecencyDbPath = join(seekyDir, 'frecency.db');
+        historyDbPath = join(seekyDir, 'history.db');
 
         const ensureDbDir = (dbPath?: string) => {
             if (!dbPath) return;
@@ -96,7 +89,25 @@ async function getOrCreateFinder(basePath: string, storagePath?: string): Promis
         };
 
         ensureDbDir(frecencyDbPath);
-        const options: { basePath: string; aiMode: boolean; frecencyDbPath?: string; historyDbPath?: string } = { basePath: normalizedBasePath, aiMode: false };
+        const options: {
+            basePath: string;
+            aiMode: boolean;
+            frecencyDbPath?: string;
+            historyDbPath?: string;
+            disableMmapCache?: boolean;
+            logFilePath?: string;
+            logLevel?: "trace" | "debug" | "info" | "warn" | "error";
+        } = {
+            basePath: normalizedBasePath,
+            aiMode: false,
+            logLevel: 'debug'
+        };
+        if (storagePath) {
+            if (!existsSync(storagePath)) {
+                mkdirSync(storagePath, { recursive: true });
+            }
+            options.logFilePath = join(storagePath, 'fff.log');
+        }
         if (frecencyDbPath) options.frecencyDbPath = frecencyDbPath;
         if (historyDbPath) options.historyDbPath = historyDbPath;
         const result = FF.create(options);
@@ -141,7 +152,8 @@ export function searchGrep(
     grepMode: 'plain' | 'regex' | 'fuzzy',
     storagePath: string | undefined,
     _currentFile: string | undefined,
-    onResult: (result: GrepResult) => void,
+    options: { classifyDefinitions?: boolean } | undefined,
+    onResult: (result: GrepResult | ISymbolResult) => void,
     onDone: (cancelled: boolean, duration?: number) => void
 ): () => void {
     let cancelled = false;
@@ -150,30 +162,62 @@ export function searchGrep(
         const finder = await getOrCreateFinder(workspacePath, storagePath);
         if (cancelled || !finder) { onDone(cancelled); return; }
 
+        // Yield to the macrotask queue so VS Code can process pending IPC messages
+        // (e.g. new keystrokes) and trigger cancelSearch before we block the event loop.
+        await new Promise(r => setTimeout(r, 0));
+        if (cancelled) { onDone(cancelled); return; }
+
         const start = performance.now();
         const result = finder.grep(query, {
             mode: grepMode,
             smartCase: true,
             pageSize: MAX_RESULTS,
             maxMatchesPerFile: 100,
-            timeBudgetMs: 30,
+            timeBudgetMs: 150,
+            ...(options?.classifyDefinitions !== undefined ? { classifyDefinitions: options.classifyDefinitions } : {}),
         });
         const duration = performance.now() - start;
 
         if (!result.ok) { onDone(false, duration); return; }
 
-        for (const match of result.value.items as GrepMatch[]) {
+        const items = result.value.items as GrepMatch[];
+        if (grepMode === 'fuzzy') {
+            items.sort((a, b) => (b.fuzzyScore ?? 0) - (a.fuzzyScore ?? 0));
+        }
+
+        let finalItems = items;
+        if (options?.classifyDefinitions) {
+            finalItems = items.filter(m => m.isDefinition);
+        }
+
+        for (const match of finalItems) {
             if (cancelled) { break; }
             const filePath = join(workspacePath, match.relativePath);
-            onResult({
-                type: 'grep',
-                file: filePath,
-                relativePath: match.relativePath,
-                line: match.lineNumber,
-                col: match.col + 1,
-                text: match.lineContent,
-                frecencyScore: match.totalFrecencyScore ?? 0,
-            });
+            
+            if (options?.classifyDefinitions) {
+                // Return as ISymbolResult so it renders with the symbol UI
+                onResult({
+                    type: 'symbol',
+                    file: filePath,
+                    relativePath: match.relativePath,
+                    line: match.lineNumber,
+                    col: match.col + 1,
+                    text: match.lineContent.trim(),
+                    kind: 'Function', // fff-node doesn't give us the kind, so we default to Function
+                    gitStatus: match.gitStatus,
+                } as ISymbolResult);
+            } else {
+                onResult({
+                    type: 'grep',
+                    file: filePath,
+                    relativePath: match.relativePath,
+                    line: match.lineNumber,
+                    col: match.col + 1,
+                    text: match.lineContent,
+                    frecencyScore: match.totalFrecencyScore ?? 0,
+                    gitStatus: match.gitStatus,
+                });
+            }
         }
 
         onDone(cancelled, duration);
@@ -181,69 +225,56 @@ export function searchGrep(
 
     return () => { cancelled = true; };
 }
-
-function getGitModifiedFiles(workspacePath: string): string[] {
-    const out = execSync('git status --porcelain', {
-        cwd: workspacePath,
-        encoding: 'utf-8',
-        stdio: ['ignore', 'pipe', 'ignore']
-    }).trim();
-
-    if (!out) return [];
-    return out
-        .split('\n')
-        .map(line => {
-            const status = line.slice(0, 2);
-            const pathPart = line.slice(3).trim();
-
-            // Exclude deleted paths because they cannot be opened in editor preview.
-            if (status.includes('D')) {
-                return '';
-            }
-
-            // Rename entries are represented as: "old/path -> new/path".
-            const renamedParts = pathPart.split(' -> ');
-            return renamedParts.length > 1
-                ? renamedParts[renamedParts.length - 1]?.trim() ?? ''
-                : pathPart;
-        })
-        .filter(path => path.length > 0);
-}
-
 export function searchGitModifiedFiles(
     query: string,
     workspacePath: string,
+    storagePath: string | undefined,
     onResult: (result: FileResult) => void,
     onDone: (cancelled: boolean, duration?: number) => void
 ): () => void {
     let cancelled = false;
 
-    const start = performance.now();
+    (async () => {
+        const finder = await getOrCreateFinder(workspacePath, storagePath);
+        if (cancelled || !finder) { onDone(cancelled); return; }
 
-    try {
-        const normalizedQuery = query.trim().toLowerCase();
-        const modifiedPaths = getGitModifiedFiles(workspacePath);
-        for (const relativePath of modifiedPaths) {
-            if (cancelled) {
-                break;
+        // Yield to macrotask queue for IPC cancellation
+        await new Promise(r => setTimeout(r, 0));
+        if (cancelled) { onDone(cancelled); return; }
+
+        const start = performance.now();
+
+        try {
+            const normalizedQuery = query.trim().toLowerCase();
+            const result = finder.glob("**", { pageSize: 100000 });
+            if (!result.ok) { onDone(false, performance.now() - start); return; }
+
+            const modifiedItems = result.value.items.filter(i => i.gitStatus && i.gitStatus !== 'clean' && i.gitStatus !== 'ignored');
+            
+            for (const item of modifiedItems) {
+                if (cancelled) {
+                    break;
+                }
+
+                if (normalizedQuery && !item.relativePath.toLowerCase().includes(normalizedQuery)) {
+                    continue;
+                }
+
+                onResult({
+                    type: 'file',
+                    file: join(workspacePath, item.relativePath),
+                    relativePath: item.relativePath,
+                    source: 'git-modified',
+                    gitStatus: item.gitStatus,
+                    frecencyScore: item.totalFrecencyScore ?? 0,
+                });
             }
 
-            if (normalizedQuery && !relativePath.toLowerCase().includes(normalizedQuery)) {
-                continue;
-            }
-
-            onResult({
-                type: 'file',
-                file: join(workspacePath, relativePath),
-                relativePath,
-                source: 'git-modified',
-            });
+            onDone(cancelled, performance.now() - start);
+        } catch {
+            onDone(cancelled, performance.now() - start);
         }
-
-        onDone(cancelled, performance.now() - start);
-    } catch {
-        onDone(cancelled, performance.now() - start);
-    }
+    })();
 
     return () => {
         cancelled = true;
@@ -264,6 +295,10 @@ export function searchFiles(
         const finder = await getOrCreateFinder(workspacePath, storagePath);
         if (cancelled || !finder) { onDone(cancelled); return; }
 
+        // Yield to the macrotask queue so VS Code can process pending IPC messages
+        await new Promise(r => setTimeout(r, 0));
+        if (cancelled) { onDone(cancelled); return; }
+
         const start = performance.now();
         const result = finder.fileSearch(query, {
             pageSize: MAX_RESULTS,
@@ -281,6 +316,7 @@ export function searchFiles(
                 file: filePath,
                 relativePath: item.relativePath,
                 frecencyScore: item.totalFrecencyScore ?? 0,
+                gitStatus: item.gitStatus,
             });
         }
 
@@ -290,59 +326,61 @@ export function searchFiles(
     return () => { cancelled = true; };
 }
 
-export function getGitStatus(filePath: string, workspacePath: string): string {
-    try {
-        const output = execSync(`git status --porcelain "${filePath}"`, {
-            cwd: workspacePath,
-            encoding: 'utf-8',
-            stdio: ['ignore', 'pipe', 'ignore']
-        }).trim();
-        if (!output) return 'unmodified';
-        const status = output.slice(0, 2).trim();
-        if (status === 'M') return 'modified';
-        if (status === 'A') return 'added';
-        if (status === '??') return 'untracked';
-        return 'modified';
-    } catch {
-        return 'none';
-    }
-}
-
-export function readFilePreview(
+export async function readFilePreview(
     filePath: string,
-    workspacePath: string,
     targetLine: number,
+    gitStatus?: string,
     contextLines = 35
-): { content: string; startLine: number; stats?: { size: number; mtime: number; gitStatus?: string } } {
+): Promise<{ content: string; startLine: number; stats?: { size: number; mtime: number; gitStatus?: string } }> {
 
     try {
-        const stats = statSync(filePath);
-        const gitStatus = getGitStatus(filePath, workspacePath);
-        const raw = readFileSync(filePath, 'utf-8');
-        const lines = raw.split('\n');
-        const start = Math.max(0, targetLine - contextLines - 1);
-        const end = Math.min(lines.length, targetLine + contextLines);
+        const stats = await fsPromises.stat(filePath);
+        const startLine = Math.max(1, targetLine - contextLines);
+        const endLine = targetLine + contextLines;
+        
+        const lines: string[] = [];
+        const fileStream = createReadStream(filePath);
+        const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
+        
+        let currentLine = 1;
+        for await (const line of rl) {
+            if (currentLine >= startLine && currentLine <= endLine) {
+                lines.push(line);
+            }
+            if (currentLine > endLine) {
+                rl.close();
+                fileStream.destroy();
+                break;
+            }
+            currentLine++;
+        }
+
         return {
-            content: lines.slice(start, end).join('\n'),
-            startLine: start + 1,
-            stats: { size: stats.size, mtime: stats.mtimeMs, gitStatus }
+            content: lines.join('\n'),
+            startLine,
+            stats: {
+                size: stats.size,
+                mtime: stats.mtimeMs,
+                ...(gitStatus !== undefined ? { gitStatus } : {})
+            }
         };
     } catch {
         return { content: '', startLine: 1 };
     }
 }
 
-export function readGitDiffPreview(
+export async function readGitDiffPreview(
     filePath: string,
-    workspacePath: string
-): { content: string; startLine: number; stats?: { size: number; mtime: number; gitStatus?: string } } {
+    workspacePath: string,
+    gitStatus?: string
+): Promise<{ content: string; startLine: number; stats?: { size: number; mtime: number; gitStatus?: string } }> {
     let stats: { size: number; mtime: number; gitStatus?: string } | undefined;
     try {
-        const fileStats = statSync(filePath);
+        const fileStats = await fsPromises.stat(filePath);
         stats = {
             size: fileStats.size,
             mtime: fileStats.mtimeMs,
-            gitStatus: getGitStatus(filePath, workspacePath),
+            ...(gitStatus !== undefined ? { gitStatus } : {})
         };
     } catch {
         stats = undefined;
@@ -350,21 +388,21 @@ export function readGitDiffPreview(
 
     try {
         const relativePath = relative(workspacePath, filePath).replace(/\\/g, '/');
-        const runDiff = (args: string[]): string => {
-            const result = spawnSync('git', args, {
-                cwd: workspacePath,
-                encoding: 'utf-8',
-                stdio: ['ignore', 'pipe', 'ignore'],
-            });
-            if (result.error) {
+        const runDiff = async (args: string[]): Promise<string> => {
+            try {
+                const { stdout } = await execFileAsync('git', args, {
+                    cwd: workspacePath,
+                    encoding: 'utf-8',
+                });
+                return stdout.trim();
+            } catch {
                 return '';
             }
-            return result.stdout?.trim() ?? '';
         };
 
-        let content = runDiff(['diff', '--no-color', '--', relativePath]);
+        let content = await runDiff(['diff', '--no-color', '--', relativePath]);
         if (!content) {
-            content = runDiff(['diff', '--no-color', '--cached', '--', relativePath]);
+            content = await runDiff(['diff', '--no-color', '--cached', '--', relativePath]);
         }
 
         if (!content && stats?.gitStatus === 'untracked') {
@@ -389,7 +427,7 @@ export function readGitDiffPreview(
         // Fall through to plain preview fallback.
     }
 
-    const fallback = readFilePreview(filePath, workspacePath, 1);
+    const fallback = await readFilePreview(filePath, 1, gitStatus);
     return {
         content: fallback.content,
         startLine: 1,
@@ -403,7 +441,7 @@ export function batAvailable(): boolean {
 
 
 export function platfromLookup(name: string): boolean {
-    const lookup = process.platform === 'win32' ? 'where.exe' : 'which'; 
+    const lookup = process.platform === 'win32' ? 'where.exe' : 'which';
     const result = spawnSync(lookup, [name], { stdio: 'ignore' });
     return result.status === 0;
 }

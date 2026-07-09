@@ -13,3 +13,13 @@ tailwind.config.js
 media/input.css
 **/*.ts
 **/*.map
+
+User/**
+prototypes/**
+.antigravitycli/**
+.github/**
+resumesession.txt
+GEMINI.md
+ESM_IMPORTS.md
+new-command-instructions.md
+fff_mcp.ps1
