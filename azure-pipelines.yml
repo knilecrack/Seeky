@@ -3,7 +3,7 @@ trigger:
   - master
 
 jobs:
-- job: Publish
+- job: Build
   strategy:
     matrix:
       Windows:
@@ -48,17 +48,35 @@ jobs:
   - task: PublishBuildArtifacts@1
     inputs:
       PathtoPublish: '$(Build.ArtifactStagingDirectory)'
-      ArtifactName: 'vsix-package-$(targetFlag)'
+      ArtifactName: 'vsix-packages'
       publishLocation: 'Container'
     displayName: 'Publish Pipeline Artifact'
 
+- job: Publish
+  dependsOn: Build
+  condition: and(succeeded(), in(variables['Build.SourceBranch'], 'refs/heads/main', 'refs/heads/master'))
+  pool:
+    vmImage: 'ubuntu-latest'
+  steps:
+  - task: UseNode@1
+    inputs:
+      version: '20.x'
+    displayName: 'Install Node.js'
+
+  - task: DownloadBuildArtifacts@1
+    inputs:
+      buildType: 'current'
+      downloadType: 'single'
+      artifactName: 'vsix-packages'
+      downloadPath: '$(System.ArtifactsDirectory)'
+    displayName: 'Download VSIX packages'
+
   - task: AzureCLI@2
     displayName: 'Publish to VS Code Marketplace (Secure)'
-    condition: and(succeeded(), in(variables['Build.SourceBranch'], 'refs/heads/main', 'refs/heads/master'))
     inputs:
       azureSubscription: 'SeekyDevOps'
       scriptType: pscore
       scriptLocation: inlineScript
       addSpnToEnvironment: true
       inlineScript: |
-        npx vsce publish --target $(targetFlag) --azure-credential
+        npx vsce publish --packagePath $(System.ArtifactsDirectory)/vsix-packages/*.vsix --azure-credential
