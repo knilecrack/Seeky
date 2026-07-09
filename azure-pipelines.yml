@@ -6,9 +6,9 @@ pool:
   vmImage: 'ubuntu-latest'
 
 steps:
-- task: NodeTool@0
+- task: UseNode@1
   inputs:
-    versionSpec: '20.x' # Using Node 20 as standard for modern extensions
+    version: '20.x' # Using Node 20 as standard for modern extensions
   displayName: 'Install Node.js'
 
 - script: |
@@ -47,7 +47,7 @@ steps:
 #
 - task: AzureCLI@2
   displayName: 'Publish to VS Code Marketplace (Secure)'
-  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  condition: and(succeeded(), in(variables['Build.SourceBranch'], 'refs/heads/main', 'refs/heads/master'))
   inputs:
     azureSubscription: 'SeekyDevOps'
     scriptType: pscore
