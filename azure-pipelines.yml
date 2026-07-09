@@ -45,6 +45,22 @@ steps:
 # 2. Add that identity to your VS Code Marketplace publisher account with the 'Contributor' role.
 # 3. Replace '<YourServiceConnectionName>' below with the name of your service connection.
 #
+
+# --- ONE TIME SETUP: GET THE MARKETPLACE ID ---
+# 1. Push this code to GitHub so the pipeline runs.
+# 2. Open the pipeline logs in Azure DevOps.
+# 3. Look at the logs for the "Get identity details" task below.
+# 4. Copy the "id" field from the JSON output. 
+# 5. Paste THAT ID into the Visual Studio Marketplace to add it as a Contributor.
+- task: AzureCLI@2
+  displayName: 'Get identity details (One-time setup)'
+  inputs:
+    azureSubscription: 'SeekyDevOps'
+    scriptType: pscore
+    scriptLocation: inlineScript
+    inlineScript: |
+      az rest -u https://app.vssps.visualstudio.com/_apis/profile/profiles/me --resource 499b84ac-1321-427f-aa17-267ca6975798
+
 - task: AzureCLI@2
   displayName: 'Publish to VS Code Marketplace (Secure)'
   condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
@@ -56,4 +72,3 @@ steps:
     inlineScript: |
       # vsce automatically detects the Azure CLI environment credentials when using this flag
       npx vsce publish --azure-credential
-
