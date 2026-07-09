@@ -76,4 +76,4 @@ jobs:
       scriptLocation: inlineScript
       addSpnToEnvironment: true
       inlineScript: |
-        npx vsce publish --packagePath $(System.ArtifactsDirectory)/vsix-packages/*.vsix --azure-credential
+        npx @vscode/vsce publish --packagePath $(System.ArtifactsDirectory)/vsix-packages/*.vsix --azure-credential
