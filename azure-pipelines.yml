@@ -2,57 +2,63 @@ trigger:
   - main
   - master
 
-pool:
-  vmImage: 'ubuntu-latest'
+jobs:
+- job: Publish
+  strategy:
+    matrix:
+      Windows:
+        imageName: 'windows-latest'
+        targetFlag: 'win32-x64'
+      Linux:
+        imageName: 'ubuntu-latest'
+        targetFlag: 'linux-x64'
+      MacOS:
+        imageName: 'macos-latest'
+        targetFlag: 'darwin-x64'
+      MacOS_ARM:
+        imageName: 'macos-latest'
+        targetFlag: 'darwin-arm64'
+  pool:
+    vmImage: $(imageName)
 
-steps:
-- task: UseNode@1
-  inputs:
-    version: '20.x' # Using Node 20 as standard for modern extensions
-  displayName: 'Install Node.js'
+  steps:
+  - task: UseNode@1
+    inputs:
+      version: '20.x'
+    displayName: 'Install Node.js'
 
-- script: |
-    npm ci
-  displayName: 'Install dependencies'
+  - script: |
+      npm ci
+    displayName: 'Install dependencies'
 
-- script: |
-    npm run compile
-  displayName: 'Run Type Checks'
+  - script: |
+      npm run compile
+    displayName: 'Run Type Checks'
 
-- script: |
-    npx vsce package
-  displayName: 'Package Extension (.vsix)'
+  - script: |
+      npx vsce package --target $(targetFlag)
+    displayName: 'Package Extension (.vsix)'
 
-- task: CopyFiles@2
-  inputs:
-    Contents: '*.vsix'
-    TargetFolder: '$(Build.ArtifactStagingDirectory)'
-  displayName: 'Copy .vsix to Artifact Directory'
+  - task: CopyFiles@2
+    inputs:
+      Contents: '*.vsix'
+      TargetFolder: '$(Build.ArtifactStagingDirectory)'
+    displayName: 'Copy .vsix to Artifact Directory'
 
-- task: PublishBuildArtifacts@1
-  inputs:
-    PathtoPublish: '$(Build.ArtifactStagingDirectory)'
-    ArtifactName: 'vsix-package'
-    publishLocation: 'Container'
-  displayName: 'Publish Pipeline Artifact'
+  - task: PublishBuildArtifacts@1
+    inputs:
+      PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+      ArtifactName: 'vsix-package-$(targetFlag)'
+      publishLocation: 'Container'
+    displayName: 'Publish Pipeline Artifact'
 
-# OPTIONAL: Secure Automated Publishing to the VS Code Marketplace
-# Microsoft recommends using Microsoft Entra ID (OIDC Workload Identity Federation)
-# instead of long-lived Personal Access Tokens (PATs).
-# 
-# Prerequisites:
-# 1. Create a Service Connection in Azure DevOps linked to a Managed Identity or Service Principal.
-# 2. Add that identity to your VS Code Marketplace publisher account with the 'Contributor' role.
-# 3. Replace '<YourServiceConnectionName>' below with the name of your service connection.
-#
-- task: AzureCLI@2
-  displayName: 'Publish to VS Code Marketplace (Secure)'
-  condition: and(succeeded(), in(variables['Build.SourceBranch'], 'refs/heads/main', 'refs/heads/master'))
-  inputs:
-    azureSubscription: 'SeekyDevOps'
-    scriptType: pscore
-    scriptLocation: inlineScript
-    addSpnToEnvironment: true
-    inlineScript: |
-      # vsce automatically detects the Azure CLI environment credentials when using this flag
-      npx vsce publish --azure-credential
+  - task: AzureCLI@2
+    displayName: 'Publish to VS Code Marketplace (Secure)'
+    condition: and(succeeded(), in(variables['Build.SourceBranch'], 'refs/heads/main', 'refs/heads/master'))
+    inputs:
+      azureSubscription: 'SeekyDevOps'
+      scriptType: pscore
+      scriptLocation: inlineScript
+      addSpnToEnvironment: true
+      inlineScript: |
+        npx vsce publish --target $(targetFlag) --azure-credential
