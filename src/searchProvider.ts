@@ -71,10 +71,7 @@ async function getOrCreateFinder(basePath: string, storagePath?: string): Promis
 
     currentBasePath = normalizedBasePath;
     finderPromise = (async () => {
-        // Create an absolute URL to the ESM module relative to this file's CommonJS __dirname (dist)
-        const fffNodePath = require('url').pathToFileURL(require('path').join(__dirname, '..', 'node_modules', '@ff-labs', 'fff-node', 'dist', 'src', 'index.js')).href;
-        const mod = await new Function('url', 'return import(url)')(fffNodePath);
-        const FF = mod.FileFinder;
+        const { FileFinder: FF } = await import('@ff-labs/fff-node');
 
         let frecencyDbPath: string | undefined;
         let historyDbPath: string | undefined;

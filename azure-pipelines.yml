@@ -15,9 +15,6 @@ jobs:
       MacOS:
         imageName: 'macos-latest'
         targetFlag: 'darwin-x64'
-      MacOS_ARM:
-        imageName: 'macos-latest'
-        targetFlag: 'darwin-arm64'
   pool:
     vmImage: $(imageName)
 
