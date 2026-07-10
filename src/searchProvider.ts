@@ -246,19 +246,15 @@ export function searchGitModifiedFiles(
 
         try {
             const normalizedQuery = query.trim().toLowerCase();
-            const result = finder.glob("**", { pageSize: 100000 });
+            // Use a moderate pageSize — avoids requesting 100k items at once.
+            const result = finder.glob("**", { pageSize: 10000 });
             if (!result.ok) { onDone(false, performance.now() - start); return; }
 
-            const modifiedItems = result.value.items.filter(i => i.gitStatus && i.gitStatus !== 'clean' && i.gitStatus !== 'ignored');
-            
-            for (const item of modifiedItems) {
-                if (cancelled) {
-                    break;
-                }
-
-                if (normalizedQuery && !item.relativePath.toLowerCase().includes(normalizedQuery)) {
-                    continue;
-                }
+            let collected = 0;
+            for (const item of result.value.items) {
+                if (cancelled || collected >= MAX_RESULTS) break;
+                if (!item.gitStatus || item.gitStatus === 'clean' || item.gitStatus === 'ignored') continue;
+                if (normalizedQuery && !item.relativePath.toLowerCase().includes(normalizedQuery)) continue;
 
                 onResult({
                     type: 'file',
@@ -268,6 +264,7 @@ export function searchGitModifiedFiles(
                     gitStatus: item.gitStatus,
                     frecencyScore: item.totalFrecencyScore ?? 0,
                 });
+                collected++;
             }
 
             onDone(cancelled, performance.now() - start);

@@ -26,6 +26,8 @@
     let currentMode = window.INITIAL_MODE || 'grep';
     let grepMode = 'fuzzy';
     let selectedIndex = -1;
+    /** @type {HTMLElement|null} */
+    let selectedElement = null;
     let navItems = [];
     let virtualItems = [];
     let totalHeight = 0;
@@ -303,6 +305,13 @@
         resultsContent.innerHTML = html;
 
         selectedIndex = items.length > 0 ? 0 : -1;
+        // Cache the initially-selected element for O(1) swaps in selectResult
+        selectedElement = selectedIndex >= 0
+            ? resultsContent.querySelector('.result-item[data-index="0"]')
+            : null;
+        if (selectedElement) {
+            selectedElement.classList.add('selected', 'result-selected');
+        }
         resultsList.scrollTop = 0;
 
         if (navItems.length > 0 && selectedIndex >= 0) {
@@ -313,16 +322,17 @@
     function selectResult(index) {
         if (navItems.length === 0) { return; }
         selectedIndex = Math.max(0, Math.min(navItems.length - 1, index));
-        
-        resultsContent.querySelectorAll('.result-item').forEach(item => {
-            const idx = parseInt(item.dataset.index, 10);
-            if (idx === selectedIndex) {
-                item.classList.add('selected', 'result-selected');
-            } else {
-                item.classList.remove('selected', 'result-selected');
-            }
-        });
-        
+
+        // O(1) swap: remove classes from the old element, add to the new one
+        if (selectedElement) {
+            selectedElement.classList.remove('selected', 'result-selected');
+        }
+        const nextEl = resultsContent.querySelector(`.result-item[data-index="${selectedIndex}"]`);
+        if (nextEl) {
+            nextEl.classList.add('selected', 'result-selected');
+            selectedElement = nextEl;
+        }
+
         scrollToSelected();
         if (navItems[selectedIndex]) {
             updatePreviewInfo(navItems[selectedIndex].item);
@@ -676,8 +686,9 @@
         return '\u2026' + path.slice(-(maxLen - 1));
     }
 
+    const _escMap = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' };
     function escHtml(str) {
-        return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        return str.replace(/[&<>"]/g, c => _escMap[c]);
     }
 
     function escapeRegex(str) {

@@ -275,31 +275,36 @@ class SeekyWebviewController {
             if (cancelled) return;
             const finalDuration = duration ?? (performance.now() - start);
 
-            if (query.trim() && items.length > 0) {
+            // Skip re-sort for grep mode — fff-node's ranking is already optimal there.
+            if (query.trim() && items.length > 0 && mode !== 'grep') {
                 const lowerQuery = query.toLowerCase();
-                
-                const getScore = (item: FFSearchResult) => {
+
+                // Pre-compute scores into an array to avoid redundant string ops during O(n log n) sort.
+                const scores = new Array<number>(items.length);
+                for (let i = 0; i < items.length; i++) {
+                    const item = items[i]!;
+                    let score = 0;
                     if (item.type === 'file') {
                         const pathLower = item.relativePath.toLowerCase();
-                        const parts = pathLower.split(/[/\\]/);
-                        const basename = parts[parts.length - 1] || '';
-                        
-                        if (basename === lowerQuery) return 100;
-                        if (basename.startsWith(lowerQuery)) return 90;
-                        if (basename.includes(lowerQuery)) return 80;
-                        if (pathLower.includes(lowerQuery)) return 70;
-                    } else if (item.type === 'grep' || item.type === 'symbol') {
-                        if (item.text.toLowerCase().includes(lowerQuery)) return 80;
-                    }
-                    return 0;
-                };
+                        const lastSlash = Math.max(pathLower.lastIndexOf('/'), pathLower.lastIndexOf('\\'));
+                        const basename = lastSlash >= 0 ? pathLower.slice(lastSlash + 1) : pathLower;
 
-                // Apply stable sort to boost exact matches, keeping fff-node's internal order for ties
-                items.sort((a, b) => {
-                    const scoreA = getScore(a);
-                    const scoreB = getScore(b);
-                    return scoreB - scoreA;
-                });
+                        if (basename === lowerQuery) score = 100;
+                        else if (basename.startsWith(lowerQuery)) score = 90;
+                        else if (basename.includes(lowerQuery)) score = 80;
+                        else if (pathLower.includes(lowerQuery)) score = 70;
+                    } else if (item.type === 'grep' || item.type === 'symbol') {
+                        if (item.text.toLowerCase().includes(lowerQuery)) score = 80;
+                    }
+                    scores[i] = score;
+                }
+
+                // Stable sort using pre-computed scores
+                const indices = Array.from({ length: items.length }, (_, i) => i);
+                indices.sort((a, b) => scores[b]! - scores[a]! || (a - b));
+                const sorted = indices.map(i => items[i]!);
+                items.length = 0;
+                items.push(...sorted);
             }
 
             this.options.webview.postMessage({ command: 'results', items, done: true, capped: false, duration: finalDuration });
