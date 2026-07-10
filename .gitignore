@@ -124,6 +124,7 @@ dist
 
 # Stores VSCode versions used for testing VSCode extensions
 .vscode-test
+.vscode/seeky/**/*
 
 # pnpm
 .pnpm-store
@@ -143,3 +144,4 @@ vite.config.ts.timestamp-*
 .vite/
 GEMINI.md
 *.vsix
+

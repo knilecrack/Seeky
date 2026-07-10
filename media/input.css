@@ -2,13 +2,14 @@
 @import "tailwindcss/utilities";
 
 :root, body.vscode-dark, body.vscode-high-contrast {
-    /* Tokyo Night Dark fallbacks */
+    /* Core UI — mapped to VS Code theme variables with Tokyo Night fallbacks */
     --bg-outer: var(--vscode-editor-background, #1a1b26);
     --bg-float: var(--vscode-editorWidget-background, #24283b);
     --bg-deep: var(--vscode-editor-background, #1a1b26);
     --border-inner: var(--vscode-widget-border, #16161e);
     --border-outer: var(--vscode-focusBorder, #1d202f);
     --text-muted: var(--vscode-descriptionForeground, #565f89);
+    --text-dim: var(--vscode-editorLineNumber-foreground, #565f89);
     --text-primary: var(--vscode-editor-foreground, #c0caf5);
     --accent: var(--vscode-textLink-foreground, #7aa2f7);
     --match-fg: var(--vscode-editor-findMatchHighlightForeground, #e0af68);
@@ -16,21 +17,36 @@
     --match-line-fg: var(--vscode-editor-findMatchHighlightForeground, #7aa2f7);
     --sel-bg: var(--vscode-list-activeSelectionBackground, rgba(41, 46, 66, 0.6));
     --sel-border: var(--vscode-list-activeSelectionForeground, #f7768e);
-    
-    --zig-kw: #bb9af7;
-    --zig-str: #9ece6a;
-    --zig-com: #565f89;
-    --zig-num: #ff9e64;
+
+    /* Syntax preview — derived from VS Code token colors */
+    --zig-kw: var(--vscode-textLink-foreground, #bb9af7);
+    --zig-str: var(--vscode-debugTokenExpression-string, #9ece6a);
+    --zig-com: var(--vscode-descriptionForeground, #565f89);
+    --zig-num: var(--vscode-debugTokenExpression-number, #ff9e64);
+
+    /* Diff colors */
+    --diff-add-fg: var(--vscode-gitDecoration-addedResourceForeground, #9ece6a);
+    --diff-add-bg: var(--vscode-diffEditor-insertedTextBackground, rgba(158, 206, 106, 0.1));
+    --diff-remove-fg: var(--vscode-gitDecoration-deletedResourceForeground, #f7768e);
+    --diff-remove-bg: var(--vscode-diffEditor-removedTextBackground, rgba(247, 118, 142, 0.1));
+    --diff-hunk-fg: var(--vscode-textLink-foreground, #7aa2f7);
+    --diff-hunk-bg: color-mix(in srgb, var(--vscode-textLink-foreground, #7aa2f7) 10%, transparent);
+
+    /* Git badge colors */
+    --git-added: var(--vscode-gitDecoration-addedResourceForeground, #3fb950);
+    --git-modified: var(--vscode-gitDecoration-modifiedResourceForeground, #d29922);
+    --git-untracked: var(--vscode-gitDecoration-untrackedResourceForeground, #58a6ff);
 }
 
 body.vscode-light {
-    /* Rosé Pine Dawn fallback with VS Code native integration */
+    /* Core UI — mapped to VS Code theme variables with Rosé Pine Dawn fallbacks */
     --bg-outer: var(--vscode-editor-background, #faf4ed);
     --bg-float: var(--vscode-editorWidget-background, #fffaf3);
     --bg-deep: var(--vscode-editor-background, #faf4ed);
     --border-inner: var(--vscode-widget-border, #f2e9de);
     --border-outer: var(--vscode-focusBorder, #dfdad9);
     --text-muted: var(--vscode-descriptionForeground, #9893a5);
+    --text-dim: var(--vscode-editorLineNumber-foreground, #9893a5);
     --text-primary: var(--vscode-editor-foreground, #575279);
     --accent: var(--vscode-textLink-foreground, #907aa9);
     --match-fg: var(--vscode-editor-findMatchHighlightForeground, #ea9d34);
@@ -38,11 +54,25 @@ body.vscode-light {
     --match-line-fg: var(--vscode-editor-findMatchHighlightForeground, #286983);
     --sel-bg: var(--vscode-list-activeSelectionBackground, rgba(223, 218, 217, 0.6));
     --sel-border: var(--vscode-list-activeSelectionForeground, #b75566);
-    
-    --zig-kw: #907aa9;
-    --zig-str: #ea9d34;
-    --zig-com: #9893a5;
-    --zig-num: #d7827e;
+
+    /* Syntax preview — derived from VS Code token colors */
+    --zig-kw: var(--vscode-textLink-foreground, #907aa9);
+    --zig-str: var(--vscode-debugTokenExpression-string, #ea9d34);
+    --zig-com: var(--vscode-descriptionForeground, #9893a5);
+    --zig-num: var(--vscode-debugTokenExpression-number, #d7827e);
+
+    /* Diff colors */
+    --diff-add-fg: var(--vscode-gitDecoration-addedResourceForeground, #d4a574);
+    --diff-add-bg: var(--vscode-diffEditor-insertedTextBackground, rgba(212, 165, 106, 0.1));
+    --diff-remove-fg: var(--vscode-gitDecoration-deletedResourceForeground, #b75566);
+    --diff-remove-bg: var(--vscode-diffEditor-removedTextBackground, rgba(183, 85, 102, 0.1));
+    --diff-hunk-fg: var(--vscode-textLink-foreground, #907aa9);
+    --diff-hunk-bg: color-mix(in srgb, var(--vscode-textLink-foreground, #907aa9) 10%, transparent);
+
+    /* Git badge colors */
+    --git-added: var(--vscode-gitDecoration-addedResourceForeground, #2ea043);
+    --git-modified: var(--vscode-gitDecoration-modifiedResourceForeground, #bf8700);
+    --git-untracked: var(--vscode-gitDecoration-untrackedResourceForeground, #0969da);
 }
 
 body {
@@ -323,7 +353,7 @@ kbd {
 }
 
 .result-path {
-    color: var(--border-inner);
+    color: var(--text-dim);
     font-size: 10px;
 }
 
@@ -387,23 +417,23 @@ mark.fuzzy-match {
     font-size: 10px !important;
 }
 
-/* Git Status Colors */
+/* Git Status Colors — derived from VS Code theme */
 .git-added {
-    background: rgba(46, 160, 67, 0.15);
-    color: #3fb950;
-    border: 1px solid rgba(46, 160, 67, 0.25);
+    background: color-mix(in srgb, var(--git-added) 15%, transparent);
+    color: var(--git-added);
+    border: 1px solid color-mix(in srgb, var(--git-added) 25%, transparent);
 }
 
 .git-modified {
-    background: rgba(210, 153, 34, 0.15);
-    color: #d29922;
-    border: 1px solid rgba(210, 153, 34, 0.25);
+    background: color-mix(in srgb, var(--git-modified) 15%, transparent);
+    color: var(--git-modified);
+    border: 1px solid color-mix(in srgb, var(--git-modified) 25%, transparent);
 }
 
 .git-untracked {
-    background: rgba(56, 139, 253, 0.15);
-    color: #58a6ff;
-    border: 1px solid rgba(56, 139, 253, 0.25);
+    background: color-mix(in srgb, var(--git-untracked) 15%, transparent);
+    color: var(--git-untracked);
+    border: 1px solid color-mix(in srgb, var(--git-untracked) 25%, transparent);
 }
 
 /* Size & Timestamp Badges */
@@ -435,7 +465,7 @@ mark.fuzzy-match {
     width: 44px;
     text-align: right;
     padding-right: 12px;
-    color: var(--border-inner);
+    color: var(--text-dim);
     flex-shrink: 0;
     user-select: none;
 }
@@ -452,52 +482,29 @@ mark.fuzzy-match {
     color: var(--text-primary);
 }
 
+/* Diff colors — unified for all themes via CSS variables */
 .preview-line.diff-add {
-    background-color: rgba(158, 206, 106, 0.1);
+    background-color: var(--diff-add-bg);
 }
 
 .preview-line.diff-add .preview-line-text {
-    color: #9ece6a;
+    color: var(--diff-add-fg);
 }
 
 .preview-line.diff-remove {
-    background-color: rgba(247, 118, 142, 0.1);
+    background-color: var(--diff-remove-bg);
 }
 
 .preview-line.diff-remove .preview-line-text {
-    color: #f7768e;
+    color: var(--diff-remove-fg);
 }
 
 .preview-line.diff-hunk {
-    background-color: rgba(122, 162, 247, 0.1);
+    background-color: var(--diff-hunk-bg);
 }
 
 .preview-line.diff-hunk .preview-line-text {
-    color: #7aa2f7;
-}
-
-body.vscode-light .preview-line.diff-add {
-    background-color: rgba(212, 165, 106, 0.1);
-}
-
-body.vscode-light .preview-line.diff-add .preview-line-text {
-    color: #d4a574;
-}
-
-body.vscode-light .preview-line.diff-remove {
-    background-color: rgba(183, 85, 102, 0.1);
-}
-
-body.vscode-light .preview-line.diff-remove .preview-line-text {
-    color: #b75566;
-}
-
-body.vscode-light .preview-line.diff-hunk {
-    background-color: rgba(144, 122, 169, 0.1);
-}
-
-body.vscode-light .preview-line.diff-hunk .preview-line-text {
-    color: #907aa9;
+    color: var(--diff-hunk-fg);
 }
 
 #watermark-preview {
