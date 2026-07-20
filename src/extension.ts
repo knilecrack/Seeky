@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { ModalSearchPanel, SeekySidebarViewProvider } from './webviewPanel';
+import { ModalSearchPanel, SeekySidebarViewProvider, SeekyIvyViewProvider } from './webviewPanel';
 import { destroyFff } from './searchProvider';
 import { SeekySearchOptions } from './types';
 import {
@@ -15,6 +15,11 @@ export function activate(context: vscode.ExtensionContext): void {
     const sidebarProvider = new SeekySidebarViewProvider(context);
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(SeekySidebarViewProvider.viewType, sidebarProvider)
+    );
+
+    const ivyProvider = new SeekyIvyViewProvider(context);
+    context.subscriptions.push(
+        vscode.window.registerWebviewViewProvider(SeekyIvyViewProvider.viewType, ivyProvider)
     );
 
     context.subscriptions.push(
@@ -64,6 +69,9 @@ export function activate(context: vscode.ExtensionContext): void {
         }),
         vscode.commands.registerCommand('seeky.documentSymbols', () => {
             ModalSearchPanel.show(context, SeekySearchOptions.Symbols);
+        }),
+        vscode.commands.registerCommand('seeky.workspaceSymbols', () => {
+            ModalSearchPanel.show(context, SeekySearchOptions.WorkspaceSymbols);
         }),
         vscode.commands.registerCommand('seeky.searchWordUnderCursor', () => {
             const editor = vscode.window.activeTextEditor;
@@ -116,6 +124,34 @@ export function activate(context: vscode.ExtensionContext): void {
                 : '';
             const query = word ? `\\p ${word}` : '';
             void sidebarProvider.reveal('grep', query);
+        })
+    );
+
+    // Ivy commands — bottom panel search
+    context.subscriptions.push(
+        vscode.commands.registerCommand('seeky.ivy.grep', () => {
+            void ivyProvider.reveal('grep');
+        }),
+        vscode.commands.registerCommand('seeky.ivy.findFiles', () => {
+            void ivyProvider.reveal('files');
+        }),
+        vscode.commands.registerCommand('seeky.ivy.recentFiles', () => {
+            void ivyProvider.reveal('recent');
+        }),
+        vscode.commands.registerCommand('seeky.ivy.openBuffers', () => {
+            void ivyProvider.reveal('buffers');
+        }),
+        vscode.commands.registerCommand('seeky.ivy.searchWordUnderCursor', () => {
+            const editor = vscode.window.activeTextEditor;
+            const word = editor
+                ? editor.document.getText(
+                    editor.selection.isEmpty
+                        ? editor.document.getWordRangeAtPosition(editor.selection.active)
+                        : editor.selection
+                ) ?? ''
+                : '';
+            const query = word ? `\\p ${word}` : '';
+            void ivyProvider.reveal('grep', query);
         })
     );
 }

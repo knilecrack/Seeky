@@ -58,7 +58,8 @@ function getHtmlContent(
     context: vscode.ExtensionContext,
     webview: vscode.Webview,
     mode: SearchMode,
-    initialQuery: string
+    initialQuery: string,
+    layout: 'classic' | 'ivy' = 'classic'
 ): string {
     const nonce = getNonce();
     const fontFamily = getFontFamily();
@@ -93,7 +94,7 @@ function getHtmlContent(
         }
     </style>
 </head>
-<body>
+<body data-layout="${layout}">
     <div id="telescope-container">
         <!-- Top Gradient Accent Line -->
         <div class="window-accent-line"></div>
@@ -161,6 +162,9 @@ function getHtmlContent(
                     <div id="results-content" class="w-full"></div>
                 </div>
             </div>
+
+            <!-- Draggable Resizer -->
+            <div id="col-resizer"></div>
 
             <!-- Preview Pane -->
             <div id="preview-col">
@@ -280,9 +284,10 @@ class SeekyWebviewController {
                 const lowerQuery = query.toLowerCase();
 
                 // Pre-compute scores into an array to avoid redundant string ops during O(n log n) sort.
-                const scores = new Array<number>(items.length);
+                const scores: number[] = [];
                 for (let i = 0; i < items.length; i++) {
-                    const item = items[i]!;
+                    const item = items[i];
+                    if (!item) continue;
                     let score = 0;
                     if (item.type === 'file') {
                         const pathLower = item.relativePath.toLowerCase();
@@ -301,8 +306,8 @@ class SeekyWebviewController {
 
                 // Stable sort using pre-computed scores
                 const indices = Array.from({ length: items.length }, (_, i) => i);
-                indices.sort((a, b) => scores[b]! - scores[a]! || (a - b));
-                const sorted = indices.map(i => items[i]!);
+                indices.sort((a, b) => (scores[b] ?? 0) - (scores[a] ?? 0) || (a - b));
+                const sorted = indices.flatMap(i => items[i] ? [items[i]] : []);
                 items.length = 0;
                 items.push(...sorted);
             }
@@ -345,7 +350,34 @@ class SeekyWebviewController {
             });
             onDone(false);
         } else if (mode === 'workspace-symbols') {
-            // Note: fff-node definition classifier acts as a fast fuzzy grep with isDefinition true.
+            // Try VS Code's LSP workspace symbol provider first for accurate kinds.
+            try {
+                const lspSymbols = await vscode.commands.executeCommand<vscode.SymbolInformation[]>(
+                    'vscode.executeWorkspaceSymbolProvider',
+                    query
+                );
+                if (lspSymbols && lspSymbols.length > 0) {
+                    for (const sym of lspSymbols) {
+                        if (items.length >= 100) break;
+                        const filePath = sym.location.uri.fsPath;
+                        items.push({
+                            type: 'symbol',
+                            file: filePath,
+                            relativePath: vscode.workspace.asRelativePath(filePath),
+                            line: sym.location.range.start.line + 1,
+                            col: sym.location.range.start.character + 1,
+                            text: sym.name,
+                            kind: vscode.SymbolKind[sym.kind],
+                            ...(sym.containerName ? { containerName: sym.containerName } : {})
+                        });
+                    }
+                    onDone(false);
+                    return;
+                }
+            } catch {
+                // LSP provider unavailable — fall through to fff-node.
+            }
+            // Fallback: fff-node definition classifier (grep heuristic).
             this.cancelSearch = searchGrep(query, this.options.workspacePath, grepMode, storagePath, currentFile, { classifyDefinitions: true }, onResult, onDone);
         } else if (mode === 'symbols') {
             const sourceUri = this.options.getSourceUri()
@@ -385,8 +417,8 @@ class SeekyWebviewController {
         const targetLine = item.type === 'grep' || item.type === 'symbol' ? item.line : 1;
         const targetCol = item.type === 'grep' || item.type === 'symbol' ? item.col : 1;
         
-        // Safely extract gitStatus since all result types now have it.
-        const gitStatus = (item as any).gitStatus as string | undefined;
+        // gitStatus exists on all FFSearchResult variants.
+        const gitStatus = item.gitStatus;
 
         const currentCounter = ++this.previewCounter;
 
@@ -407,8 +439,8 @@ class SeekyWebviewController {
     }
 
     private async openItem(item: FFSearchResult, options: OpenItemOptions = {}): Promise<void> {
-        const line = item.type === 'grep' ? item.line - 1 : 0;
-        const col = item.type === 'grep' ? item.col - 1 : 0;
+        const line = (item.type === 'grep' || item.type === 'symbol') ? item.line - 1 : 0;
+        const col = (item.type === 'grep' || item.type === 'symbol') ? item.col - 1 : 0;
         const targetColumn = options.sideBySide ? vscode.ViewColumn.Beside : this.options.getDefaultViewColumn();
         const shouldDispose = options.dispose ?? this.options.defaultDisposeOnOpen;
 
@@ -607,6 +639,86 @@ export class SeekySidebarViewProvider implements vscode.WebviewViewProvider {
 
         await vscode.commands.executeCommand('workbench.view.extension.seeky');
         await vscode.commands.executeCommand(`${SeekySidebarViewProvider.viewType}.focus`);
+
+        if (!this.view) {
+            return;
+        }
+
+        if (initialQuery) {
+            this.view.webview.postMessage({ command: 'setQuery', query: initialQuery, mode });
+        } else {
+            this.view.webview.postMessage({ command: 'setMode', mode });
+        }
+        this.view.webview.postMessage({ command: 'focus' });
+    }
+}
+
+export class SeekyIvyViewProvider implements vscode.WebviewViewProvider {
+    static readonly viewType = 'seeky.ivy';
+
+    private static readonly modeStateKey = 'seeky.ivy.mode';
+    private static readonly queryStateKey = 'seeky.ivy.query';
+
+    private view: vscode.WebviewView | undefined;
+    private controller: SeekyWebviewController | undefined;
+    private pendingMode: SearchMode | undefined;
+    private pendingQuery: string | undefined;
+
+    constructor(private readonly context: vscode.ExtensionContext) { }
+
+    resolveWebviewView(webviewView: vscode.WebviewView): void {
+        this.view = webviewView;
+        const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+        const mode = this.pendingMode ?? this.context.workspaceState.get<SearchMode>(SeekyIvyViewProvider.modeStateKey, 'grep');
+        const query = this.pendingQuery ?? this.context.workspaceState.get<string>(SeekyIvyViewProvider.queryStateKey, '');
+
+        webviewView.webview.options = {
+            enableScripts: true,
+            localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, 'media')],
+        };
+
+        webviewView.webview.html = getHtmlContent(this.context, webviewView.webview, mode, query, 'ivy');
+        
+        this.controller?.dispose();
+
+        this.controller = new SeekyWebviewController({
+            context: this.context,
+            webview: webviewView.webview,
+            workspacePath,
+            getDefaultViewColumn: () => vscode.ViewColumn.Active,
+            getSourceUri: () => vscode.window.activeTextEditor?.document.uri,
+            closeHost: () => {
+                void vscode.commands.executeCommand('workbench.action.closePanel');
+            },
+            defaultDisposeOnOpen: false,
+            onSearchRequest: (nextQuery, nextMode) => {
+                void this.context.workspaceState.update(SeekyIvyViewProvider.modeStateKey, nextMode);
+                void this.context.workspaceState.update(SeekyIvyViewProvider.queryStateKey, nextQuery);
+            }
+        });
+
+        webviewView.webview.onDidReceiveMessage(msg => this.controller?.handleMessage(msg as SeekyIncomingMessage));
+        webviewView.onDidChangeVisibility(() => {
+            if (webviewView.visible) {
+                webviewView.webview.postMessage({ command: 'focus' });
+            }
+        });
+        webviewView.onDidDispose(() => {
+            this.controller?.dispose();
+            this.controller = undefined;
+            this.view = undefined;
+        });
+
+        this.pendingMode = undefined;
+        this.pendingQuery = undefined;
+    }
+
+    async reveal(mode: SearchMode = 'grep', initialQuery = ''): Promise<void> {
+        this.pendingMode = mode;
+        this.pendingQuery = initialQuery;
+
+        await vscode.commands.executeCommand('workbench.view.extension.seeky-panel');
+        await vscode.commands.executeCommand(`${SeekyIvyViewProvider.viewType}.focus`);
 
         if (!this.view) {
             return;

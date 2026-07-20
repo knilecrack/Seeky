@@ -204,7 +204,8 @@ export async function showSeekyModalGrepQuickPick(context: vscode.ExtensionConte
             context.globalStorageUri.fsPath,
             currentFile,
             undefined,
-            (result: any) => {
+            (result) => {
+                if (result.type !== 'grep') return;
                 found.push({
                     relativePath: result.relativePath,
                     text: result.text,

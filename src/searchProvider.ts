@@ -1,6 +1,9 @@
-import { readFileSync, statSync, existsSync, mkdirSync, createReadStream, promises as fsPromises } from 'node:fs';
-import { join, dirname, relative } from 'node:path';
-import { execSync, spawnSync, execFile } from 'node:child_process';
+import { existsSync, mkdirSync, createReadStream, promises as fsPromises } from 'node:fs';
+import { join, dirname, relative, extname } from 'node:path';
+import { getSingletonHighlighter, createCssVariablesTheme, bundledLanguages } from 'shiki';
+import type { BundledLanguage, BundledTheme } from 'shiki';
+import type { ThemeRegistrationAny } from '@shikijs/types';
+import { spawnSync, execFile } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 import * as readline from 'node:readline';
 import { promisify } from 'node:util';
@@ -73,12 +76,9 @@ async function getOrCreateFinder(basePath: string, storagePath?: string): Promis
     finderPromise = (async () => {
         const { FileFinder: FF } = await import('@ff-labs/fff-node');
 
-        let frecencyDbPath: string | undefined;
-        let historyDbPath: string | undefined;
-
         const seekyDir = join(normalizedBasePath, '.vscode', 'seeky');
-        frecencyDbPath = join(seekyDir, 'frecency.db');
-        historyDbPath = join(seekyDir, 'history.db');
+        const frecencyDbPath = join(seekyDir, 'frecency.db');
+        const historyDbPath = join(seekyDir, 'history.db');
 
         const ensureDbDir = (dbPath?: string) => {
             if (!dbPath) return;
@@ -193,7 +193,7 @@ export function searchGrep(
         for (const match of finalItems) {
             if (cancelled) { break; }
             const filePath = join(workspacePath, match.relativePath);
-            
+
             if (options?.classifyDefinitions) {
                 // Return as ISymbolResult so it renders with the symbol UI
                 onResult({
@@ -323,6 +323,58 @@ export function searchFiles(
     return () => { cancelled = true; };
 }
 
+let shikiTheme: ThemeRegistrationAny | undefined;
+async function highlightLines(code: string, filePath: string): Promise<string> {
+    const ext = extname(filePath).slice(1).toLowerCase();
+    let lang: BundledLanguage | 'text' = 'text';
+
+    if (ext) {
+        if (ext in bundledLanguages) {
+            lang = ext as BundledLanguage;
+        } else {
+            const map: Record<string, BundledLanguage> = {
+                'js': 'javascript', 'ts': 'typescript', 'jsx': 'javascript', 'tsx': 'typescript',
+                'md': 'markdown', 'rs': 'rust', 'py': 'python', 'go': 'go', 'c': 'c', 'cpp': 'cpp',
+                'json': 'json', 'css': 'css', 'html': 'html', 'zig': 'zig'
+            };
+            if (map[ext]) lang = map[ext];
+        }
+    }
+
+    if (lang === 'text') {
+        return escapeHtml(code);
+    }
+
+    try {
+        if (!shikiTheme) {
+            shikiTheme = createCssVariablesTheme({ name: 'css-variables', variablePrefix: '--shiki-' });
+        }
+
+        const highlighter = await getSingletonHighlighter({
+            themes: [shikiTheme],
+            langs: [lang]
+        });
+
+        const tokens = highlighter.codeToTokensBase(code, { lang, theme: 'css-variables' as BundledTheme });
+
+        return tokens.map(line => {
+            return line.map(token => {
+                if (token.color) {
+                    return `<span style="color: ${token.color}">${escapeHtml(token.content)}</span>`;
+                }
+                return escapeHtml(token.content);
+            }).join('');
+        }).join('\n');
+    } catch {
+        return escapeHtml(code);
+    }
+}
+
+function escapeHtml(str: string) {
+    const map: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
+    return str.replace(/[&<>"']/g, c => map[c] || c);
+}
+
 export async function readFilePreview(
     filePath: string,
     targetLine: number,
@@ -334,11 +386,11 @@ export async function readFilePreview(
         const stats = await fsPromises.stat(filePath);
         const startLine = Math.max(1, targetLine - contextLines);
         const endLine = targetLine + contextLines;
-        
+
         const lines: string[] = [];
         const fileStream = createReadStream(filePath);
         const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
-        
+
         let currentLine = 1;
         for await (const line of rl) {
             if (currentLine >= startLine && currentLine <= endLine) {
@@ -352,8 +404,10 @@ export async function readFilePreview(
             currentLine++;
         }
 
+        const content = await highlightLines(lines.join('\n'), filePath);
+
         return {
-            content: lines.join('\n'),
+            content,
             startLine,
             stats: {
                 size: stats.size,

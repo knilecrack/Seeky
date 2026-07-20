@@ -2,7 +2,7 @@
   "name": "seeky",
   "displayName": "Seeky",
   "description": "Telescope-inspired modal search using ripgrep/fff — live grep and file finder with preview",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "publisher": "knilecrack",
   "engines": {
     "vscode": "^1.95.0"
@@ -31,6 +31,13 @@
           "title": "Seeky",
           "icon": "media/icon.svg"
         }
+      ],
+      "panel": [
+        {
+          "id": "seeky-panel",
+          "title": "Seeky",
+          "icon": "media/icon.svg"
+        }
       ]
     },
     "views": {
@@ -38,6 +45,14 @@
         {
           "type": "webview",
           "id": "seeky.sidebar",
+          "name": "Search",
+          "icon": "media/icon.svg"
+        }
+      ],
+      "seeky-panel": [
+        {
+          "type": "webview",
+          "id": "seeky.ivy",
           "name": "Search",
           "icon": "media/icon.svg"
         }
@@ -82,6 +97,11 @@
       {
         "command": "seeky.documentSymbols",
         "title": "Document Symbols",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.workspaceSymbols",
+        "title": "Workspace Symbols",
         "category": "Seeky"
       },
       {
@@ -147,6 +167,31 @@
       {
         "command": "seeky.sidebar.searchWordUnderCursor",
         "title": "Sidebar: Search Word Under Cursor",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.ivy.grep",
+        "title": "Ivy Panel: Live Grep",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.ivy.findFiles",
+        "title": "Ivy Panel: Find Files",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.ivy.recentFiles",
+        "title": "Ivy Panel: Recent Files",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.ivy.openBuffers",
+        "title": "Ivy Panel: Open Buffers",
+        "category": "Seeky"
+      },
+      {
+        "command": "seeky.ivy.searchWordUnderCursor",
+        "title": "Ivy Panel: Search Word Under Cursor",
         "category": "Seeky"
       }
     ],
@@ -248,8 +293,8 @@
     "@vscode/codicons": "^0.0.45",
     "@vscode/vsce": "^3.9.1",
     "esbuild": "^0.28.0",
-     "tailwindcss": "^4.3.0",
-    "typescript": "^6.0.3"
+    "tailwindcss": "^4.3.0",
+    "typescript": "^7.0.0"
   },
   "dependencies": {
     "@ff-labs/fff-node": "^0.9.6",

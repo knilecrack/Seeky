@@ -10,7 +10,6 @@
     // ── DOM refs ──────────────────────────────────────────────────────────────
     const searchInput = /** @type {HTMLInputElement} */ (document.getElementById('search-input'));
     const resultsList = /** @type {HTMLElement} */ (document.getElementById('results-list'));
-    const resultsSpacer = /** @type {HTMLElement} */ (document.getElementById('results-spacer'));
     const resultsContent = /** @type {HTMLElement} */ (document.getElementById('results-content'));
     const titleLabel = /** @type {HTMLElement} */ (document.getElementById('title-label'));
     const resultCount = /** @type {HTMLElement} */ (document.getElementById('result-count'));
@@ -21,6 +20,16 @@
     const previewContent = /** @type {HTMLElement} */ (document.getElementById('preview-content'));
 
     const statusMode = /** @type {HTMLElement} */ (document.getElementById('status-mode'));
+    const colResizer = /** @type {HTMLElement} */ (document.getElementById('col-resizer'));
+    const resultsCol = /** @type {HTMLElement} */ (document.getElementById('results-col'));
+
+    // Create Vim Block Cursor
+    const vimCursor = document.createElement('div');
+    vimCursor.className = 'vim-block-cursor';
+    vimCursor.style.display = 'none';
+    if (resultsList) {
+        resultsList.parentElement.appendChild(vimCursor);
+    }
 
     // ── State ─────────────────────────────────────────────────────────────────
     let currentMode = window.INITIAL_MODE || 'grep';
@@ -29,8 +38,6 @@
     /** @type {HTMLElement|null} */
     let selectedElement = null;
     let navItems = [];
-    let virtualItems = [];
-    let totalHeight = 0;
     const history = [];
     let lastEscapeTimestamp = 0;
 
@@ -39,6 +46,36 @@
     if (regexToggle) {
         regexToggle.addEventListener('click', () => {
             searchInput.focus();
+        });
+    }
+
+    // ── Resizer Logic ─────────────────────────────────────────────────────────
+    let isResizing = false;
+    if (colResizer && resultsCol) {
+        colResizer.addEventListener('mousedown', (e) => {
+            isResizing = true;
+            colResizer.classList.add('dragging');
+            document.body.style.cursor = 'col-resize';
+            e.preventDefault();
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (!isResizing) return;
+            const container = document.getElementById('content-area');
+            if (!container) return;
+            const containerWidth = container.offsetWidth;
+            const newWidthPercent = (e.clientX / containerWidth) * 100;
+            if (newWidthPercent > 15 && newWidthPercent < 80) {
+                document.documentElement.style.setProperty('--results-width', `${newWidthPercent}%`);
+            }
+        });
+
+        window.addEventListener('mouseup', () => {
+            if (isResizing) {
+                isResizing = false;
+                colResizer.classList.remove('dragging');
+                document.body.style.cursor = '';
+            }
         });
     }
 
@@ -86,20 +123,39 @@
     }
     updateRegexToggleUI();
 
-    const RESULT_ITEM_HEIGHT = 42;
-    const GREP_MATCH_ONLY_HEIGHT = 26;
     const PATH_TRUNCATE_LEN = 32;
     const MODES = ['grep', 'files', 'recent', 'buffers', 'symbols', 'workspace-symbols', 'git-modified'];
 
     // ── Mode / Focus Management ───────────────────────────────────────────────
+    let isInsertMode = true;
+
+    function updateVimCursor() {
+        if (!selectedElement || isInsertMode) {
+            vimCursor.style.display = 'none';
+            return;
+        }
+        vimCursor.style.display = 'block';
+        const rect = selectedElement.getBoundingClientRect();
+        const parentRect = resultsList.parentElement.getBoundingClientRect();
+        
+        vimCursor.style.top = `${rect.top - parentRect.top}px`;
+        vimCursor.style.left = `${rect.left - parentRect.left}px`;
+        vimCursor.style.width = `${rect.width}px`;
+        vimCursor.style.height = `${rect.height}px`;
+    }
+
     searchInput.addEventListener('focus', () => {
+        isInsertMode = true;
         statusMode.textContent = '-- INSERT --';
         statusMode.style.color = 'var(--accent)';
+        updateVimCursor();
     });
 
     searchInput.addEventListener('blur', () => {
+        isInsertMode = false;
         statusMode.textContent = '-- NORMAL --';
         statusMode.style.color = 'var(--text-muted)';
+        updateVimCursor();
     });
 
     // Setup mode tabs click events
@@ -292,11 +348,23 @@
                 iconHtml = `<img src="${window.MEDIA_URI}/${iconPath}" class="result-file-icon" />`;
             }
 
+            let containerHtml = '';
+            if ((currentMode === 'symbols' || currentMode === 'workspace-symbols') && item.containerName) {
+                containerHtml = `<span class="result-path" style="margin-right: 2px;">${escHtml(item.containerName)} ›</span>`;
+            }
+
+            let kindBadgeHtml = '';
+            if ((currentMode === 'symbols' || currentMode === 'workspace-symbols') && item.kind) {
+                kindBadgeHtml = `<span class="result-path" style="margin-left: auto; opacity: 0.7; font-size: 9px;">${escHtml(item.kind)}</span>`;
+            }
+
             html += `<div class="result-item${sel}" data-index="${i}">
                 <div class="result-file-row">
                     ${iconHtml}
+                    ${containerHtml}
                     <span class="result-filename truncate">${hlFname}</span>
                     <span class="result-path truncate">${escHtml(truncatedDir)}</span>
+                    ${kindBadgeHtml}
                 </div>
                 ${matchHtml}
             </div>`;
@@ -337,6 +405,7 @@
         if (navItems[selectedIndex]) {
             updatePreviewInfo(navItems[selectedIndex].item);
         }
+        updateVimCursor();
     }
 
     resultsContent.addEventListener('click', (e) => {
@@ -411,28 +480,6 @@
     }
 
     // ── Syntax Highlighting ───────────────────────────────────────────────────
-    const KWS = new Set(['const', 'var', 'fn', 'pub', 'return', 'if', 'else', 'for', 'while', 'switch', 'try', 'catch', 'defer', 'errdefer', 'comptime', 'inline', 'void', 'bool', 'usize', 'true', 'false', 'null', 'undefined', 'error', 'struct', 'enum', 'union', 'orelse', 'unreachable', 'break', 'continue']);
-
-    function applySyntaxHighlighting(escapedText) {
-        // 1. Strings: &quot;...&quot;
-        let html = escapedText.replace(/&quot;.*?&quot;/g, match => `<span class="syn-str">${match}</span>`);
-
-        // 2. Line Comments: // ...
-        html = html.replace(/\/\/.*$/g, match => `<span class="syn-com">${match}</span>`);
-
-        // 3. Keywords & Numbers (not inside spans to be safe, but a simple regex works for this prototype)
-        // We use a simple token replacer that ignores anything inside a span.
-        const tokenRegex = /(<[^>]+>)|(\b[a-zA-Z_]\w*\b)|(\b\d+\b)/g;
-        html = html.replace(tokenRegex, (match, tag, word, num) => {
-            if (tag) return match;
-            if (num) return `<span class="syn-num">${match}</span>`;
-            if (word && KWS.has(word)) return `<span class="syn-kw">${match}</span>`;
-            return match;
-        });
-
-        return html;
-    }
-
     function formatSize(bytes) {
         if (bytes === undefined || bytes === null) return '';
         if (bytes < 1024) return `${bytes} B`;
@@ -474,23 +521,22 @@
             const lineNum = data.startLine + i;
             const isTarget = lineNum === data.targetLine;
 
-            let textHtml = escHtml(lines[i]);
             if (isDiff) {
                 const line = lines[i];
-                let diffClass = '';
-                if (line.startsWith('@@')) {
-                    diffClass = ' diff-hunk';
-                } else if (line.startsWith('+') && !line.startsWith('+++')) {
-                    diffClass = ' diff-add';
-                } else if (line.startsWith('-') && !line.startsWith('---')) {
-                    diffClass = ' diff-remove';
-                }
+                const textHtml = escHtml(line);
+                const diffClass = (() => {
+                    if (line.startsWith('@@')) return ' diff-hunk';
+                    if (line.startsWith('+') && !line.startsWith('+++')) return ' diff-add';
+                    if (line.startsWith('-') && !line.startsWith('---')) return ' diff-remove';
+                    return '';
+                })();
                 html += `<div class="preview-line${isTarget ? ' matched' : ''}${diffClass}">
                     <span class="preview-line-num">${lineNum}</span>
                     <span class="preview-line-text">${textHtml}</span>
                 </div>`;
             } else {
-                textHtml = applySyntaxHighlighting(textHtml);
+                // Backend provides Shiki highlighted HTML
+                const textHtml = lines[i];
                 html += `<div class="preview-line${isTarget ? ' matched' : ''}">
                     <span class="preview-line-num">${lineNum}</span>
                     <span class="preview-line-text">${textHtml}</span>
@@ -658,18 +704,29 @@
     // ── Utils ─────────────────────────────────────────────────────────────────
     function getSymbolIcon(kind) {
         switch (kind) {
+            case 'File': return 'codicon-symbol-file';
+            case 'Module': case 'Namespace': case 'Package': return 'codicon-symbol-namespace';
             case 'Class': return 'codicon-symbol-class';
             case 'Method': return 'codicon-symbol-method';
+            case 'Property': case 'Field': return 'codicon-symbol-property';
+            case 'Constructor': return 'codicon-symbol-method';
+            case 'Enum': return 'codicon-symbol-enum';
+            case 'Interface': return 'codicon-symbol-interface';
             case 'Function': return 'codicon-symbol-function';
             case 'Variable': return 'codicon-symbol-variable';
             case 'Constant': return 'codicon-symbol-constant';
-            case 'Property': case 'Field': return 'codicon-symbol-property';
-            case 'Interface': return 'codicon-symbol-interface';
-            case 'Enum': case 'EnumMember': return 'codicon-symbol-enum';
+            case 'String': return 'codicon-symbol-string';
+            case 'Number': return 'codicon-symbol-numeric';
+            case 'Boolean': return 'codicon-symbol-boolean';
+            case 'Array': return 'codicon-symbol-array';
+            case 'Object': return 'codicon-symbol-namespace';
+            case 'Key': return 'codicon-symbol-key';
+            case 'Null': return 'codicon-symbol-null';
+            case 'EnumMember': return 'codicon-symbol-enum-member';
             case 'Struct': return 'codicon-symbol-struct';
             case 'Event': return 'codicon-symbol-event';
             case 'Operator': return 'codicon-symbol-operator';
-            case 'Module': case 'Namespace': case 'Package': return 'codicon-symbol-namespace';
+            case 'TypeParameter': return 'codicon-symbol-type-parameter';
             default: return 'codicon-symbol-misc';
         }
     }
@@ -683,7 +740,7 @@
 
     function truncatePath(path, maxLen) {
         if (path.length <= maxLen) return path;
-        return '\u2026' + path.slice(-(maxLen - 1));
+        return `\u2026${path.slice(-(maxLen - 1))}`;
     }
 
     const _escMap = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' };

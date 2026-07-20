@@ -1,9 +1,10 @@
 {
   "compilerOptions": {
-    "module": "commonjs",
-    "target": "ES2022",
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    "target": "ES2024",
     "lib": [
-      "ES2023"
+      "ES2024"
     ],
     "types": [
       "node"
@@ -16,11 +17,9 @@
     "exactOptionalPropertyTypes": true,
     "noImplicitOverride": true,
     "noPropertyAccessFromIndexSignature": true,
-    "esModuleInterop": true,
     "skipLibCheck": true,
     "sourceMap": true,
-    "declaration": true,
-    "declarationMap": true
+    "verbatimModuleSyntax": true
   },
   "include": [
     "src/**/*"

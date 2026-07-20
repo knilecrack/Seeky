@@ -17,12 +17,21 @@
     --match-line-fg: var(--vscode-editor-findMatchHighlightForeground, #7aa2f7);
     --sel-bg: var(--vscode-list-activeSelectionBackground, rgba(41, 46, 66, 0.6));
     --sel-border: var(--vscode-list-activeSelectionForeground, #f7768e);
+    --list-hover: var(--vscode-list-hoverBackground, #16161e);
+    --scrollbar-thumb: var(--vscode-scrollbarSlider-background, rgba(41, 46, 66, 0.6));
+    --scrollbar-hover: var(--vscode-scrollbarSlider-hoverBackground, #565f89);
 
-    /* Syntax preview — derived from VS Code token colors */
-    --zig-kw: var(--vscode-textLink-foreground, #bb9af7);
-    --zig-str: var(--vscode-debugTokenExpression-string, #9ece6a);
-    --zig-com: var(--vscode-descriptionForeground, #565f89);
-    --zig-num: var(--vscode-debugTokenExpression-number, #ff9e64);
+    /* Syntax preview — derived from VS Code token colors via Shiki */
+    --shiki-foreground: var(--vscode-editor-foreground, #c0caf5);
+    --shiki-token-keyword: var(--vscode-textLink-foreground, #bb9af7);
+    --shiki-token-string: var(--vscode-debugTokenExpression-string, #9ece6a);
+    --shiki-token-string-expression: var(--vscode-debugTokenExpression-string, #9ece6a);
+    --shiki-token-comment: var(--vscode-descriptionForeground, #565f89);
+    --shiki-token-constant: var(--vscode-debugTokenExpression-number, #ff9e64);
+    --shiki-token-function: var(--vscode-symbolIcon-functionForeground, #7aa2f7);
+    --shiki-token-punctuation: var(--vscode-descriptionForeground, #565f89);
+    --shiki-token-parameter: var(--vscode-editor-foreground, #c0caf5);
+    --shiki-token-link: var(--vscode-textLink-foreground, #7aa2f7);
 
     /* Diff colors */
     --diff-add-fg: var(--vscode-gitDecoration-addedResourceForeground, #9ece6a);
@@ -54,12 +63,21 @@ body.vscode-light {
     --match-line-fg: var(--vscode-editor-findMatchHighlightForeground, #286983);
     --sel-bg: var(--vscode-list-activeSelectionBackground, rgba(223, 218, 217, 0.6));
     --sel-border: var(--vscode-list-activeSelectionForeground, #b75566);
+    --list-hover: var(--vscode-list-hoverBackground, #f2e9de);
+    --scrollbar-thumb: var(--vscode-scrollbarSlider-background, rgba(223, 218, 217, 0.6));
+    --scrollbar-hover: var(--vscode-scrollbarSlider-hoverBackground, #9893a5);
 
-    /* Syntax preview — derived from VS Code token colors */
-    --zig-kw: var(--vscode-textLink-foreground, #907aa9);
-    --zig-str: var(--vscode-debugTokenExpression-string, #ea9d34);
-    --zig-com: var(--vscode-descriptionForeground, #9893a5);
-    --zig-num: var(--vscode-debugTokenExpression-number, #d7827e);
+    /* Syntax preview — derived from VS Code token colors via Shiki */
+    --shiki-foreground: var(--vscode-editor-foreground, #575279);
+    --shiki-token-keyword: var(--vscode-textLink-foreground, #907aa9);
+    --shiki-token-string: var(--vscode-debugTokenExpression-string, #ea9d34);
+    --shiki-token-string-expression: var(--vscode-debugTokenExpression-string, #ea9d34);
+    --shiki-token-comment: var(--vscode-descriptionForeground, #9893a5);
+    --shiki-token-constant: var(--vscode-debugTokenExpression-number, #d7827e);
+    --shiki-token-function: var(--vscode-symbolIcon-functionForeground, #286983);
+    --shiki-token-punctuation: var(--vscode-descriptionForeground, #9893a5);
+    --shiki-token-parameter: var(--vscode-editor-foreground, #575279);
+    --shiki-token-link: var(--vscode-textLink-foreground, #907aa9);
 
     /* Diff colors */
     --diff-add-fg: var(--vscode-gitDecoration-addedResourceForeground, #d4a574);
@@ -269,14 +287,39 @@ kbd {
 }
 
 #results-col {
-    width: 35%;
-    min-width: 300px;
-    max-width: 500px;
-    border-right: 1px solid var(--border-inner);
+    width: var(--results-width, 35%);
+    min-width: 200px;
+    max-width: 70%;
     display: flex;
     flex-direction: column;
     position: relative;
     min-height: 0;
+    flex-shrink: 0;
+}
+
+/* ── Draggable Column Resizer ──────────────────────────────────────────── */
+#col-resizer {
+    width: 5px;
+    cursor: col-resize;
+    background: var(--border-inner);
+    flex-shrink: 0;
+    position: relative;
+    z-index: 5;
+    transition: background 0.15s ease;
+}
+
+#col-resizer:hover,
+#col-resizer.dragging {
+    background: var(--accent);
+}
+
+#col-resizer::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: -3px;
+    right: -3px;
 }
 
 #preview-col {
@@ -318,7 +361,7 @@ kbd {
 }
 
 .result-item:hover {
-    background: var(--border-inner);
+    background: var(--list-hover);
     transform: translateX(2px);
 }
 
@@ -551,19 +594,31 @@ mark.fuzzy-match {
     font-size: 11px;
 }
 
-/* Syntax Highlighting */
-.syn-str { color: var(--zig-str); }
-.syn-com { color: var(--zig-com); font-style: italic; }
-.syn-kw { color: var(--zig-kw); }
-.syn-num { color: var(--zig-num); }
+/* Syntax Highlighting (fallback classes) */
+.syn-str { color: var(--shiki-token-string); }
+.syn-com { color: var(--shiki-token-comment); font-style: italic; }
+.syn-kw { color: var(--shiki-token-keyword); }
+.syn-num { color: var(--shiki-token-constant); }
 
 /* Scrollbars */
 ::-webkit-scrollbar { width: 12px; height: 12px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { 
-    background: var(--sel-bg); 
+    background: var(--scrollbar-thumb); 
     border-radius: 6px; 
     border: 3px solid var(--bg-outer); 
     background-clip: padding-box;
 }
-::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-hover); }
+
+/* ── Vim Block Cursor ──────────────────────────────────────────────────── */
+.vim-block-cursor {
+    position: absolute;
+    pointer-events: none;
+    z-index: 10;
+    background-color: var(--text-primary);
+    mix-blend-mode: difference;
+    opacity: 0.55;
+    border-radius: 3px;
+    transition: top 0.08s ease, opacity 0.15s ease;
+}
