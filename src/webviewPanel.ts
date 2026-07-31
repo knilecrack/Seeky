@@ -1,10 +1,12 @@
 import * as vscode from 'vscode';
 import type { FFSearchResult } from './searchProvider';
 import {
+    parseGlobOnlyQuery,
     readGitDiffPreview,
     readFilePreview,
     searchFiles,
     searchGitModifiedFiles,
+    searchGlobFiles,
     searchGrep,
 } from './searchProvider';
 
@@ -189,6 +191,7 @@ function getHtmlContent(
                             <div class="watermark-shortcuts">
                                 <span><kbd>Tab</kbd> Cycle Modes</span>
                                 <span><kbd>\\f</kbd> fuzzy <kbd>\\p</kbd> plain <kbd>\\r</kbd> regex</span>
+                                <span><kbd>query *.ext</kbd> Filter by File Glob</span>
                                 <span><kbd>↑</kbd> / <kbd>↓</kbd> Navigate</span>
                                 <span><kbd>Enter</kbd> Open Result</span>
                             </div>
@@ -321,7 +324,15 @@ class SeekyWebviewController {
         const currentFile = vscode.window.activeTextEditor?.document.uri.fsPath;
 
         if (mode === 'grep') {
-            this.cancelSearch = searchGrep(query, this.options.workspacePath, grepMode, storagePath, currentFile, undefined, onResult, onDone);
+            // A query made only of glob tokens (e.g. "*.cs") would match no file
+            // content — list the matching files instead. Skipped in regex mode,
+            // where '*' is more likely intentional pattern syntax.
+            const globPatterns = grepMode === 'regex' ? null : parseGlobOnlyQuery(query);
+            if (globPatterns) {
+                this.cancelSearch = searchGlobFiles(globPatterns, this.options.workspacePath, storagePath, onResult, onDone);
+            } else {
+                this.cancelSearch = searchGrep(query, this.options.workspacePath, grepMode, storagePath, currentFile, undefined, onResult, onDone);
+            }
         } else if (mode === 'files') {
             this.cancelSearch = searchFiles(query, this.options.workspacePath, storagePath, currentFile, onResult, onDone);
         } else if (mode === 'git-modified') {

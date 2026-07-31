@@ -225,6 +225,67 @@ export function searchGrep(
 
     return () => { cancelled = true; };
 }
+/**
+ * Returns the glob tokens when the query consists solely of file-glob tokens
+ * (e.g. "*.cs" or "*.cs src/**"), otherwise null. Used to list matching files
+ * instead of running a content grep that would silently return nothing.
+ */
+export function parseGlobOnlyQuery(query: string): string[] | null {
+    const tokens = query.trim().split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) {
+        return null;
+    }
+    return tokens.every(token => /[*?[\]]/.test(token)) ? tokens : null;
+}
+
+export function searchGlobFiles(
+    patterns: string[],
+    workspacePath: string,
+    storagePath: string | undefined,
+    onResult: (result: FileResult) => void,
+    onDone: (cancelled: boolean, duration?: number) => void
+): () => void {
+    let cancelled = false;
+
+    (async () => {
+        const finder = await getOrCreateFinder(workspacePath, storagePath);
+        if (cancelled || !finder) { onDone(cancelled); return; }
+
+        // Yield to the macrotask queue so VS Code can process pending IPC messages
+        // (e.g. new keystrokes) and trigger cancelSearch before we block the event loop.
+        await new Promise(r => setTimeout(r, 0));
+        if (cancelled) { onDone(cancelled); return; }
+
+        const start = performance.now();
+        const seen = new Set<string>();
+        let collected = 0;
+
+        for (const pattern of patterns) {
+            const result = finder.glob(pattern, { pageSize: MAX_RESULTS });
+            if (!result.ok) { continue; }
+
+            for (const item of result.value.items) {
+                if (cancelled || collected >= MAX_RESULTS) { break; }
+                if (seen.has(item.relativePath)) { continue; }
+                seen.add(item.relativePath);
+                onResult({
+                    type: 'file',
+                    file: join(workspacePath, item.relativePath),
+                    relativePath: item.relativePath,
+                    frecencyScore: item.totalFrecencyScore ?? 0,
+                    gitStatus: item.gitStatus,
+                });
+                collected++;
+            }
+            if (cancelled || collected >= MAX_RESULTS) { break; }
+        }
+
+        onDone(cancelled, performance.now() - start);
+    })();
+
+    return () => { cancelled = true; };
+}
+
 export function searchGitModifiedFiles(
     query: string,
     workspacePath: string,

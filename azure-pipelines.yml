@@ -12,9 +12,6 @@ jobs:
       Linux:
         imageName: 'ubuntu-latest'
         targetFlag: 'linux-x64'
-      MacOS:
-        imageName: 'macos-latest'
-        targetFlag: 'darwin-x64'
   pool:
     vmImage: $(imageName)
 

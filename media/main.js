@@ -449,6 +449,7 @@
                 <div class="watermark-shortcuts">
                     <span><kbd>Tab</kbd> Cycle Modes</span>
                     <span><kbd>\\f</kbd> fuzzy <kbd>\\p</kbd> plain <kbd>\\r</kbd> regex</span>
+                    <span><kbd>query *.ext</kbd> Filter by File Glob</span>
                     <span><kbd>↑</kbd> / <kbd>↓</kbd> Navigate</span>
                     <span><kbd>Enter</kbd> Open Result</span>
                 </div>

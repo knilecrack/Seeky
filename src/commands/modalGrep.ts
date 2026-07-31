@@ -148,7 +148,7 @@ export async function showSeekyModalGrepQuickPick(context: vscode.ExtensionConte
     const quickPick = vscode.window.createQuickPick<ModalGrepPickItem>();
     (quickPick as vscode.QuickPick<ModalGrepPickItem> & { sortByLabel?: boolean }).sortByLabel = false;
     quickPick.title = 'Seeky: Open Modal Grep';
-    quickPick.placeholder = 'Search text... (\\f fuzzy, \\p plain, \\r regex)';
+    quickPick.placeholder = 'Search text... (\\f fuzzy, \\p plain, \\r regex, append *.ext to filter files)';
     quickPick.matchOnDescription = true;
     quickPick.matchOnDetail = true;
     quickPick.ignoreFocusOut = false;
