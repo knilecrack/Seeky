@@ -1,62 +1,58 @@
 # Seeky
 
-> A Telescope-inspired fuzzy finder for VS Code, powered by [`ripgrep`](https://github.com/BurntSushi/ripgrep) and [`fzf`](https://github.com/junegunn/fzf).
+> A Telescope-inspired, keyboard-driven modal search for VS Code — live grep, file finder, buffers, symbols, and more, with real-time previews.
 
-**⚠️ Work in progress.** 
+**⚠️ Work in progress.**
 
 ---
 
 ## What is Seeky?
 
-Seeky brings the Neovim [Telescope](https://github.com/nvim-telescope/telescope.nvim) experience to VS Code — a unified, keyboard-driven fuzzy picker for files, symbols, grep results, buffers, and more. It delegates the heavy lifting to battle-tested CLI tools (`rg` for search, `fzf` for fuzzy matching) and stays out of the way.
+Seeky brings the Neovim [Telescope](https://github.com/nvim-telescope/telescope.nvim) experience to VS Code: a unified, keyboard-driven picker for files, grep results, buffers, symbols, recent files, and git-modified files — all with live, syntax-highlighted previews.
+
+Search is powered by [`@ff-labs/fff-node`](https://www.npmjs.com/package/@ff-labs/fff-node), the native Rust [`fff`](https://github.com/dmtrKovalenko/fff) engine with Node bindings. There are **no external binaries to install** — no ripgrep, no fzf. Previews are highlighted with [Shiki](https://shiki.style/).
 
 ---
 
 ## Features
 
-| Picker | Command | Description |
-|---|---|---|
-| Find Files | `seeky.findFiles` | Fuzzy-search all files in the workspace |
-| Live Grep | `seeky.liveGrep` | Interactive ripgrep across file contents |
-| Buffers | `seeky.buffers` | Switch between open editors |
-| Symbols | `seeky.symbols` | Workspace and document symbol search |
-| Git Files | `seeky.gitFiles` | Files tracked by Git (`git ls-files`) |
-| Find Word Under Cursor | `seeky.findWordUnderCursor` | Live grep seeded with the word at the caret |
+- **Live Grep** — fuzzy, plain-text, or regex search across file contents (`\f` / `\p` / `\r` query prefixes to switch sub-modes)
+- **File Finder** — fuzzy file search with frecency-based ranking that learns from your picks
+- **Git Modified Files** — jump between files with uncommitted changes
+- **Recent Files** — most-recently-used files, tracked per workspace
+- **Open Buffers** — switch between open editors
+- **Document & Workspace Symbols** — symbol search with kind icons
+- **Search Word Under Cursor** — grep seeded with the word at the caret
+- **Fast Fuzzy** (QuickPick) — line-level fuzzy search over the current buffer or all open buffers, with auto-preview
+- **Real-time previews** — Shiki syntax highlighting; diff previews for git-modified files
 
----
+### Three UI hosts
 
-## Requirements
+The same search UI runs in three places:
 
-Seeky shells out to external binaries. Both must be on your `PATH`:
-
-- [`ripgrep`](https://github.com/BurntSushi/ripgrep#installation) (`rg`) — used for file content search
-- [`fzf`](https://github.com/junegunn/fzf#installation) — used for fuzzy matching and ranking
-
-**Quick check:**
-
-```sh
-rg --version
-fzf --version
-```
-
-> On Windows, both tools are available via `winget`, `scoop`, or `choco`. On macOS via `brew`. On Linux via your distro's package manager or the project's GitHub releases.
+1. **Modal** — a floating panel in the editor area; closes after opening a result
+2. **Sidebar** — a persistent view in the Seeky activity-bar container; stays open after opening results
+3. **Ivy panel** — the same UI in the bottom panel container
 
 ---
 
 ## Installation
 
-Seeky is not yet published to the VS Code Marketplace.
-
-To try it from source:
+Seeky is not yet published to the VS Code Marketplace. To try it from source:
 
 ```sh
 git clone https://github.com/knilecrack/Seeky
 cd Seeky
 npm install
-npm run compile
+npm run build
 ```
 
-Then press `F5` in VS Code to launch the Extension Development Host.
+Then either press `F5` in VS Code to launch the Extension Development Host, or build and install a `.vsix`:
+
+```sh
+npm run package
+code --install-extension seeky-<version>.vsix
+```
 
 ---
 
@@ -66,112 +62,90 @@ Then press `F5` in VS Code to launch the Extension Development Host.
 
 | Keybinding | Action |
 |---|---|
-| `Ctrl+P` | Find Files |
-| `Ctrl+Shift+F` | Live Grep |
-| `Ctrl+Shift+B` | Buffers |
-| `Ctrl+Shift+S` | Symbols |
-| `Ctrl+Shift+G` | Git Files |
-| `Ctrl+Shift+W` | Find Word Under Cursor |
+| `Ctrl+Shift+G` | Live Grep (modal) |
+| `Ctrl+Shift+Alt+P` | Find Files (modal) |
+| `Ctrl+Shift+H` | Search Word Under Cursor |
+| `Ctrl+Alt+S Ctrl+Alt+G` | Search Git Modified Files |
+| `Ctrl+Alt+G` | Sidebar: Live Grep |
+| `Ctrl+Alt+P` | Sidebar: Find Files |
+| `Ctrl+Alt+H` | Sidebar: Search Word Under Cursor |
+| `Alt+Shift+O` | Toggle Fuzzy Scope (in Fast Fuzzy QuickPick) |
 
-> All bindings are configurable via `keybindings.json`. See [Configuration](#configuration).
+On macOS, `Ctrl` becomes `Cmd` (except `Alt+Shift+O`). All bindings are configurable via `keybindings.json`; every command is also available from the Command Palette under the `Seeky` category.
 
 ### Inside the Picker
 
 | Key | Action |
 |---|---|
-| `↑` / `↓` or `Ctrl+K` / `Ctrl+J` | Move selection |
+| `↑` / `↓` | Move selection |
 | `Enter` | Open selected item |
-| `Ctrl+S` | Open in horizontal split |
-| `Ctrl+V` | Open in vertical split |
-| `Ctrl+T` | Open in new tab |
-| `Esc` | Close picker |
+| `Tab` / `Shift+Tab` | Cycle search modes (grep, files, git-modified, recent, buffers, symbols) |
+| `Esc` `Esc` | Close picker (press twice) |
+
+In Live Grep mode, prefix your query to pick a sub-mode: `\f` fuzzy (default), `\p` plain text, `\r` regex.
 
 ---
 
 ## Configuration
 
-Settings are available under the `seeky` namespace in your `settings.json`.
+Settings are available under the `seeky` namespace in `settings.json`:
 
 ```jsonc
 {
-  // Path overrides if rg/fzf are not on PATH
-  "seeky.rgPath": "rg",
-  "seeky.fzfPath": "fzf",
-
-  // Extra arguments passed to rg for live grep
-  "seeky.rgExtraArgs": ["--hidden", "--glob=!.git"],
-
-  // Extra arguments passed to fzf
-  "seeky.fzfExtraArgs": [],
-
-  // Files/dirs to ignore in Find Files (respects .gitignore by default)
-  "seeky.fileExcludes": ["**/node_modules/**", "**/.git/**"],
-
-  // Max results returned by any picker
+  // Maximum number of search results to display
   "seeky.maxResults": 200,
 
-  // Preview pane: show a file preview alongside results
-  "seeky.preview.enabled": true
+  // Font used in the Seeky picker (defaults to the editor font)
+  "seeky.fontFamily": "Editor Font" // or "Monaspace Argon" | "Krypton" | "Neon" | "Radon" | "Xenon"
 }
 ```
+
+> Note: `seeky.maxResults` is currently registered but the search backend caps results at 100 internally.
 
 ---
 
 ## Architecture
 
 ```
-VS Code QuickPick UI
-        │
-        ▼
-  Seeky Picker Layer
-  (debounce, state, keybindings)
-        │
-   ┌────┴─────┐
-   ▼          ▼
-  rg         fzf
-(grep/files) (fuzzy rank)
+        ┌────────────┬────────────┬────────────┐
+        │   Modal    │  Sidebar   │ Ivy panel  │   (shared webview UI)
+        └────────────┴─────┬──────┴────────────┘
+                           │
+                 SeekyWebviewController
+                 (messages, dispatch, preview)
+                           │
+                    searchProvider.ts
+                           │
+              @ff-labs/fff-node (Rust engine)
+        fuzzy files · grep (fuzzy/plain/regex) · frecency
 ```
 
-Seeky spawns `rg` as a child process to enumerate files or search content, pipes results to `fzf` for fuzzy ranking, and feeds the output back into VS Code's native QuickPick widget. No Electron wrappers, no embedded search engine.
+- One cached `FileFinder` per workspace root; frecency/history LMDB databases live in `<workspace>/.vscode/seeky/`
+- Previews are HTML-escaped and highlighted with Shiki tokens
+- See [AGENTS.md](AGENTS.md) for the full architecture guide and contribution conventions
 
 ---
 
-## Roadmap
+## Development
 
-- [ ] Find Files picker
-- [ ] Live Grep picker
-- [ ] Buffer list picker
-- [ ] Workspace & document symbols
-- [ ] Git Files picker
-- [ ] Find Word Under Cursor
-- [ ] File preview pane
-- [ ] Multi-select and bulk open
-- [ ] Resume last picker state
-- [ ] Custom picker API (bring your own source)
-- [ ] Marketplace release
+```sh
+npm install
+npm run build     # Tailwind CSS + esbuild bundle
+npm run watch     # rebuild on change
+npm run compile   # type-check only
+npm run lint      # Biome
+```
+
+There is no automated test suite yet — verify changes with `compile` + `lint` + `build`, then press `F5` and check manually in the Extension Development Host.
 
 ---
 
 ## Contributing
 
-The project is in early concept stage — feedback, ideas, and PRs are all welcome.
-
-```sh
-git clone https://github.com/knilecrack/Seeky
-cd Seeky
-npm install
-```
-
-Run tests:
-
-```sh
-npm test
-```
-
-Please open an issue before sending large PRs so we can align on direction first.
+Feedback, ideas, and PRs are welcome. Please read [AGENTS.md](AGENTS.md) first, and open an issue before sending large PRs so we can align on direction.
 
 ---
 
 ## License
 
-[MIT](LICENSE)
+MIT
