@@ -30,6 +30,12 @@ jobs:
     displayName: 'Run Type Checks'
 
   - script: |
+      BASE=$(node -p "require('./package.json').version.split('.').slice(0,2).join('.')")
+      npm version "$BASE.$(Build.BuildId)" --no-git-tag-version
+      echo "Publishing version: $(node -p "require('./package.json').version")"
+    displayName: 'Set CI version (major.minor.BuildId)'
+
+  - script: |
       npx vsce package --target $(targetFlag)
     displayName: 'Package Extension (.vsix)'
 
@@ -73,4 +79,4 @@ jobs:
       scriptLocation: inlineScript
       addSpnToEnvironment: true
       inlineScript: |
-        npx @vscode/vsce publish --packagePath $(System.ArtifactsDirectory)/vsix-packages/*.vsix --azure-credential
+        npx @vscode/vsce publish --packagePath $(System.ArtifactsDirectory)/vsix-packages/*.vsix --azure-credential --skip-duplicate

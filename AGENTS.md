@@ -207,9 +207,13 @@ Grep supports three sub-modes — `fuzzy` (default), `plain`, `regex` — select
 `azure-pipelines.yml` (Azure DevOps, triggers on `main`/`master`):
 
 1. **Build job** (matrix: `windows-latest` / `ubuntu-latest`): `npm ci` → `npm run compile`
-   → `npx vsce package --target <win32-x64|linux-x64>` → publishes `.vsix` build artifacts.
+   → sets the version to `<major.minor>.$(Build.BuildId)` (major/minor come from
+   `package.json`; the patch is CI-assigned, so bump `package.json` only for minor/major
+   releases) → `npx vsce package --target <win32-x64|linux-x64>` → publishes `.vsix` build
+   artifacts.
 2. **Publish job** (main/master only): downloads artifacts and publishes both packages to
-   the VS Code Marketplace via `AzureCLI@2` + `vsce publish --azure-credential`.
+   the VS Code Marketplace via `AzureCLI@2` + `vsce publish --azure-credential
+   --skip-duplicate` (re-runs of the same build are skipped, not failed).
 
 `azcli_managed.yaml` is a small helper pipeline that inspects the managed identity behind
 the `SeekyDevOps` service connection. The extension is not yet on the Marketplace as a
