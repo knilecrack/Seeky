@@ -11,6 +11,9 @@
     <AssemblyName>SeekyVS</AssemblyName>
     <!-- LibraryImport source-generated P/Invoke (FffNativeClient) requires unsafe code. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- The windows10.0.19041.0 TFM implicitly references the C#/WinRT projection
+         (Microsoft.Windows.SDK.NET.dll, ~25 MB in the VSIX). We call no WinRT APIs — drop it. -->
+    <IncludeWindowsSDKRefFrameworkReferences>false</IncludeWindowsSDKRefFrameworkReferences>
   </PropertyGroup>
 
   <!--

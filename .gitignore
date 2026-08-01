@@ -126,6 +126,9 @@ dist
 .vscode-test
 .vscode/seeky/**/*
 
+# Visual Studio metadata / SeekyVS fff state
+.vs/
+
 # pnpm
 .pnpm-store
 
