@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -49,7 +50,7 @@ internal sealed partial class FffNativeClient : IDisposable
     }
 
     /// <summary>A fuzzy file-search result.</summary>
-    internal readonly record struct FileItem(string Path, long FrecencyScore);
+    internal readonly record struct FileItem(string Path, long FrecencyScore, string? GitStatus, bool IsBinary);
 
     /// <summary>
     /// A single grep match. <paramref name="Ranges"/> holds the highlight spans as
@@ -57,7 +58,9 @@ internal sealed partial class FffNativeClient : IDisposable
     /// them as byte offsets into the UTF-8 line; converted here). Empty when the backend
     /// provides no ranges.
     /// </summary>
-    internal readonly record struct GrepMatch(string Path, int Line, string Text, int Col, (int Start, int End)[] Ranges);
+    internal readonly record struct GrepMatch(
+        string Path, int Line, string Text, int Col, (int Start, int End)[] Ranges,
+        string? GitStatus, bool IsBinary, bool IsDefinition);
 
     /// <summary>Grep results plus the regex-fallback notice, if any.</summary>
     internal sealed record GrepResult(IReadOnlyList<GrepMatch> Matches, string? RegexFallbackError);
@@ -94,37 +97,109 @@ internal sealed partial class FffNativeClient : IDisposable
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     ThrowIfNotStartedCore();
-
-                    IntPtr result = Native.fff_search(handle, query, null, 0, 0, (uint)maxResults, 0, 0);
-                    IntPtr payload = UnwrapResult(result, "search");
-                    try
-                    {
-                        uint count = Native.fff_search_result_get_count(payload);
-                        var items = new List<FileItem>((int)count);
-                        for (uint i = 0; i < count; i++)
-                        {
-                            IntPtr item = Native.fff_search_result_get_item(payload, i);
-                            if (item == IntPtr.Zero)
-                            {
-                                continue;
-                            }
-
-                            string? path = PtrToString(Native.fff_file_item_get_relative_path(item));
-                            if (path is not null)
-                            {
-                                items.Add(new FileItem(path, Native.fff_file_item_get_total_frecency_score(item)));
-                            }
-                        }
-
-                        return items;
-                    }
-                    finally
-                    {
-                        Native.fff_free_search_result(payload);
-                    }
+                    return SearchFilesCore(query, maxResults, useGlob: false);
                 }
             },
             cancellationToken);
+    }
+
+    /// <summary>
+    /// "Git Modified" mode: files with a non-empty git status. Runs the normal fuzzy search and
+    /// filters client-side. An empty query means "all modified files, ranked by frecency" — if
+    /// <c>fff_search</c> returns nothing for it, fall back to <c>fff_glob</c> with '*'
+    /// (glob-only search ranked by frecency, per the header).
+    /// </summary>
+    public Task<IReadOnlyList<FileItem>> GitModifiedAsync(string query, int maxResults, CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxResults);
+
+        return Task.Run<IReadOnlyList<FileItem>>(
+            () =>
+            {
+                lock (gate)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    ThrowIfNotStartedCore();
+
+                    List<FileItem> items = SearchFilesCore(query, maxResults, useGlob: false);
+                    if (items.Count == 0 && query.Length == 0)
+                    {
+                        SeekyLog.Info("fff: empty-query search returned nothing; falling back to fff_glob '*'");
+                        items = SearchFilesCore("*", maxResults, useGlob: true);
+                    }
+
+                    return (IReadOnlyList<FileItem>)items
+                        .Where(f => !string.IsNullOrEmpty(f.GitStatus))
+                        .Take(maxResults)
+                        .ToList();
+                }
+            },
+            cancellationToken);
+    }
+
+    /// <summary>Asks fff to refresh its git-status cache (best-effort; logs the update count).</summary>
+    public Task RefreshGitStatusAsync(CancellationToken cancellationToken)
+    {
+        return Task.Run(
+            () =>
+            {
+                try
+                {
+                    lock (gate)
+                    {
+                        if (handle == IntPtr.Zero)
+                        {
+                            return;
+                        }
+
+                        IntPtr result = Native.fff_refresh_git_status(handle);
+                        _ = UnwrapResult(result, "refresh_git_status", out long updated);
+                        SeekyLog.Info($"fff refresh_git_status: {updated} files updated");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    SeekyLog.Error("fff refresh_git_status failed", ex);
+                }
+            },
+            cancellationToken);
+    }
+
+    private List<FileItem> SearchFilesCore(string query, int maxResults, bool useGlob)
+    {
+        IntPtr result = useGlob
+            ? Native.fff_glob(handle, query, null, 0, 0, (uint)maxResults)
+            : Native.fff_search(handle, query, null, 0, 0, (uint)maxResults, 0, 0);
+        IntPtr payload = UnwrapResult(result, useGlob ? "glob" : "search");
+        try
+        {
+            uint count = Native.fff_search_result_get_count(payload);
+            var items = new List<FileItem>((int)count);
+            for (uint i = 0; i < count; i++)
+            {
+                IntPtr item = Native.fff_search_result_get_item(payload, i);
+                if (item == IntPtr.Zero)
+                {
+                    continue;
+                }
+
+                string? path = PtrToString(Native.fff_file_item_get_relative_path(item));
+                if (path is not null)
+                {
+                    items.Add(new FileItem(
+                        path,
+                        Native.fff_file_item_get_total_frecency_score(item),
+                        PtrToString(Native.fff_file_item_get_git_status(item)),
+                        Native.fff_file_item_get_is_binary(item)));
+                }
+            }
+
+            return items;
+        }
+        finally
+        {
+            Native.fff_free_search_result(payload);
+        }
     }
 
     /// <summary>Content search in the given mode; the query is passed raw (fff parses
@@ -153,7 +228,7 @@ internal sealed partial class FffNativeClient : IDisposable
                         timeBudgetMs: 0,
                         beforeContext: 0,
                         afterContext: 0,
-                        classifyDefinitions: false);
+                        classifyDefinitions: true);
                     IntPtr payload = UnwrapResult(result, "live_grep");
                     try
                     {
@@ -185,7 +260,10 @@ internal sealed partial class FffNativeClient : IDisposable
                                 checked((int)Native.fff_grep_match_get_line_number(match)),
                                 text,
                                 (int)Native.fff_grep_match_get_col(match),
-                                ReadMatchRanges(match, text)));
+                                ReadMatchRanges(match, text),
+                                PtrToString(Native.fff_grep_match_get_git_status(match)),
+                                Native.fff_grep_match_get_is_binary(match),
+                                Native.fff_grep_match_get_is_definition(match)));
                         }
 
                         return new GrepResult(matches, fallbackError);
@@ -511,6 +589,14 @@ internal sealed partial class FffNativeClient : IDisposable
             int comboBoostMultiplier, uint minComboCount);
 
         [LibraryImport(LibraryName, StringMarshalling = StringMarshalling.Utf8)]
+        internal static partial IntPtr fff_glob(
+            IntPtr handle, string pattern, string? currentFile,
+            uint maxThreads, uint pageIndex, uint pageSize);
+
+        [LibraryImport(LibraryName)]
+        internal static partial IntPtr fff_refresh_git_status(IntPtr handle);
+
+        [LibraryImport(LibraryName, StringMarshalling = StringMarshalling.Utf8)]
         internal static partial IntPtr fff_live_grep(
             IntPtr handle, string query, byte mode,
             ulong maxFileSize, uint maxMatchesPerFile,
@@ -566,6 +652,13 @@ internal sealed partial class FffNativeClient : IDisposable
         internal static partial IntPtr fff_file_item_get_relative_path(IntPtr item);
 
         [LibraryImport(LibraryName)]
+        internal static partial IntPtr fff_file_item_get_git_status(IntPtr item);
+
+        [LibraryImport(LibraryName)]
+        [return: MarshalAs(UnmanagedType.I1)]
+        internal static partial bool fff_file_item_get_is_binary(IntPtr item);
+
+        [LibraryImport(LibraryName)]
         internal static partial long fff_file_item_get_total_frecency_score(IntPtr item);
 
         [LibraryImport(LibraryName)]
@@ -579,6 +672,17 @@ internal sealed partial class FffNativeClient : IDisposable
 
         [LibraryImport(LibraryName)]
         internal static partial IntPtr fff_grep_match_get_relative_path(IntPtr match);
+
+        [LibraryImport(LibraryName)]
+        internal static partial IntPtr fff_grep_match_get_git_status(IntPtr match);
+
+        [LibraryImport(LibraryName)]
+        [return: MarshalAs(UnmanagedType.I1)]
+        internal static partial bool fff_grep_match_get_is_binary(IntPtr match);
+
+        [LibraryImport(LibraryName)]
+        [return: MarshalAs(UnmanagedType.I1)]
+        internal static partial bool fff_grep_match_get_is_definition(IntPtr match);
 
         [LibraryImport(LibraryName)]
         internal static partial IntPtr fff_grep_match_get_line_content(IntPtr match);
