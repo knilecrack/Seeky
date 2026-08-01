@@ -52,6 +52,9 @@ internal sealed partial class FffNativeClient : IDisposable
     /// <summary>A fuzzy file-search result.</summary>
     internal readonly record struct FileItem(string Path, long FrecencyScore, string? GitStatus, bool IsBinary);
 
+    /// <summary>A directory-search result (fff_search_directories).</summary>
+    internal readonly record struct DirItem(string Path, string Name);
+
     /// <summary>
     /// A single grep match. <paramref name="Ranges"/> holds the highlight spans as
     /// (start, end) UTF-16 char indices into <paramref name="Text"/> (the native side reports
@@ -85,8 +88,9 @@ internal sealed partial class FffNativeClient : IDisposable
             cancellationToken);
     }
 
-    /// <summary>Fuzzy file search; returns workspace-relative paths with frecency scores.</summary>
-    public Task<IReadOnlyList<FileItem>> FindFilesAsync(string query, int maxResults, CancellationToken cancellationToken)
+    /// <summary>Fuzzy file search; returns workspace-relative paths with frecency scores.
+    /// <paramref name="currentFile"/> deprioritizes the currently open file (fff current_file).</summary>
+    public Task<IReadOnlyList<FileItem>> FindFilesAsync(string query, string? currentFile, int maxResults, CancellationToken cancellationToken)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxResults);
 
@@ -97,7 +101,103 @@ internal sealed partial class FffNativeClient : IDisposable
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     ThrowIfNotStartedCore();
-                    return SearchFilesCore(query, maxResults, useGlob: false);
+                    return SearchFilesCore(query, currentFile, maxResults, useGlob: false);
+                }
+            },
+            cancellationToken);
+    }
+
+    /// <summary>Fuzzy directory search (fff_search_directories); paths are workspace-relative.</summary>
+    public Task<IReadOnlyList<DirItem>> FindDirectoriesAsync(string query, string? currentFile, int maxResults, CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxResults);
+
+        return Task.Run<IReadOnlyList<DirItem>>(
+            () =>
+            {
+                lock (gate)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    ThrowIfNotStartedCore();
+
+                    IntPtr result = Native.fff_search_directories(handle, query, currentFile, 0, 0, (uint)maxResults);
+                    IntPtr payload = UnwrapResult(result, "search_directories");
+                    try
+                    {
+                        uint count = Native.fff_dir_search_result_get_count(payload);
+                        var items = new List<DirItem>((int)count);
+                        for (uint i = 0; i < count; i++)
+                        {
+                            IntPtr item = Native.fff_dir_search_result_get_item(payload, i);
+                            if (item == IntPtr.Zero)
+                            {
+                                continue;
+                            }
+
+                            // FffDirItem { char* relative_path; char* dir_name; i32 frecency } —
+                            // the header exposes no accessors, so marshal the tiny struct.
+                            FffDirItem native = Marshal.PtrToStructure<FffDirItem>(item);
+                            string? path = PtrToString(native.RelativePath);
+                            if (path is not null)
+                            {
+                                items.Add(new DirItem(path, PtrToString(native.DirName) ?? path));
+                            }
+                        }
+
+                        return (IReadOnlyList<DirItem>)items;
+                    }
+                    finally
+                    {
+                        Native.fff_free_dir_search_result(payload);
+                    }
+                }
+            },
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Recent queries from fff's history LMDB (fff_get_historical_query; 0 = most recent).
+    /// History is populated by fff_track_query, i.e. queries that led to a picked result.
+    /// </summary>
+    public Task<IReadOnlyList<string>> GetHistoryAsync(int max, CancellationToken cancellationToken)
+    {
+        return Task.Run<IReadOnlyList<string>>(
+            () =>
+            {
+                lock (gate)
+                {
+                    var queries = new List<string>();
+                    if (handle == IntPtr.Zero)
+                    {
+                        return (IReadOnlyList<string>)queries;
+                    }
+
+                    for (ulong offset = 0; offset < (ulong)max; offset++)
+                    {
+                        IntPtr result = Native.fff_get_historical_query(handle, offset);
+                        IntPtr payload = UnwrapResult(result, "get_historical_query");
+                        if (payload == IntPtr.Zero)
+                        {
+                            break; // no more history
+                        }
+
+                        try
+                        {
+                            string? query = PtrToString(payload);
+                            if (string.IsNullOrEmpty(query))
+                            {
+                                break;
+                            }
+
+                            queries.Add(query);
+                        }
+                        finally
+                        {
+                            Native.fff_free_string(payload);
+                        }
+                    }
+
+                    return (IReadOnlyList<string>)queries;
                 }
             },
             cancellationToken);
@@ -121,11 +221,11 @@ internal sealed partial class FffNativeClient : IDisposable
                     cancellationToken.ThrowIfCancellationRequested();
                     ThrowIfNotStartedCore();
 
-                    List<FileItem> items = SearchFilesCore(query, maxResults, useGlob: false);
+                    List<FileItem> items = SearchFilesCore(query, null, maxResults, useGlob: false);
                     if (items.Count == 0 && query.Length == 0)
                     {
                         SeekyLog.Info("fff: empty-query search returned nothing; falling back to fff_glob '*'");
-                        items = SearchFilesCore("*", maxResults, useGlob: true);
+                        items = SearchFilesCore("*", null, maxResults, useGlob: true);
                     }
 
                     return (IReadOnlyList<FileItem>)items
@@ -165,11 +265,11 @@ internal sealed partial class FffNativeClient : IDisposable
             cancellationToken);
     }
 
-    private List<FileItem> SearchFilesCore(string query, int maxResults, bool useGlob)
+    private List<FileItem> SearchFilesCore(string query, string? currentFile, int maxResults, bool useGlob)
     {
         IntPtr result = useGlob
-            ? Native.fff_glob(handle, query, null, 0, 0, (uint)maxResults)
-            : Native.fff_search(handle, query, null, 0, 0, (uint)maxResults, 0, 0);
+            ? Native.fff_glob(handle, query, currentFile, 0, 0, (uint)maxResults)
+            : Native.fff_search(handle, query, currentFile, 0, 0, (uint)maxResults, 0, 0);
         IntPtr payload = UnwrapResult(result, useGlob ? "glob" : "search");
         try
         {
@@ -597,6 +697,26 @@ internal sealed partial class FffNativeClient : IDisposable
         internal static partial IntPtr fff_refresh_git_status(IntPtr handle);
 
         [LibraryImport(LibraryName, StringMarshalling = StringMarshalling.Utf8)]
+        internal static partial IntPtr fff_search_directories(
+            IntPtr handle, string query, string? currentFile,
+            uint maxThreads, uint pageIndex, uint pageSize);
+
+        [LibraryImport(LibraryName)]
+        internal static partial IntPtr fff_dir_search_result_get_item(IntPtr result, uint index);
+
+        [LibraryImport(LibraryName)]
+        internal static partial uint fff_dir_search_result_get_count(IntPtr result);
+
+        [LibraryImport(LibraryName)]
+        internal static partial void fff_free_dir_search_result(IntPtr result);
+
+        [LibraryImport(LibraryName)]
+        internal static partial IntPtr fff_get_historical_query(IntPtr handle, ulong offset);
+
+        [LibraryImport(LibraryName)]
+        internal static partial void fff_free_string(IntPtr s);
+
+        [LibraryImport(LibraryName, StringMarshalling = StringMarshalling.Utf8)]
         internal static partial IntPtr fff_live_grep(
             IntPtr handle, string query, byte mode,
             ulong maxFileSize, uint maxMatchesPerFile,
@@ -738,5 +858,14 @@ internal sealed partial class FffNativeClient : IDisposable
     {
         internal uint Start;
         internal uint End;
+    }
+
+    // Blittable mirror of FffDirItem (two char* + i32; C layout with 4-byte tail padding).
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FffDirItem
+    {
+        internal IntPtr RelativePath;
+        internal IntPtr DirName;
+        internal int MaxAccessFrecency;
     }
 }

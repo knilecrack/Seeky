@@ -77,6 +77,7 @@ internal static class SeekyModalWindowManager
     private static string? workspaceDir;
     private static string requestedMode = "files";
     private static int searchGeneration;
+    private static CancellationTokenSource? searchCancellation;
     private static string lastSearchQuery = string.Empty;
 
     /// <summary>
@@ -90,7 +91,7 @@ internal static class SeekyModalWindowManager
     {
         SeekyModalWindowManager.extensibility = extensibility;
         lastClientContext = clientContext;
-        requestedMode = mode is "files" or "grep" or "git" ? mode : "files";
+        requestedMode = mode is "files" or "grep" or "git" or "dirs" ? mode : "files";
         EnsureUiThread();
         SeekyLog.Info($"ShowAsync (mode={requestedMode}): enqueueing ShowCore on UI thread");
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -104,6 +105,13 @@ internal static class SeekyModalWindowManager
     public static void Shutdown()
     {
         SeekyLog.Info("Shutdown: disposing fff native client");
+        CancellationTokenSource? pendingSearch = Interlocked.Exchange(ref searchCancellation, null);
+        if (pendingSearch is not null)
+        {
+            pendingSearch.Cancel();
+            pendingSearch.Dispose();
+        }
+
         FffClient.Dispose();
     }
 
@@ -193,6 +201,7 @@ internal static class SeekyModalWindowManager
             PostJson(new { type = "reset" });
             PostJson(new { type = "setMode", mode = requestedMode });
             PostJson(new { type = "setFont", fontFamily = ResolveFontFamily() });
+            PostHistoryAsync().Forget();
             FocusPopup();
             return;
         }
@@ -278,6 +287,7 @@ internal static class SeekyModalWindowManager
             SeekyLog.Info($"DOMContentLoaded: posting setMode '{requestedMode}'");
             PostJson(new { type = "setMode", mode = requestedMode });
             PostJson(new { type = "setFont", fontFamily = ResolveFontFamily() });
+            PostHistoryAsync().Forget();
         };
         coreWebView.Navigate("https://seeky.vs/index.html");
         SeekyLog.Info($"ShowCore: navigated to https://seeky.vs/index.html (mapped to '{webUiDir}')");
@@ -363,9 +373,10 @@ internal static class SeekyModalWindowManager
                         string? path = GetString(doc.RootElement, "path");
                         int? line = GetInt(doc.RootElement, "line");
                         bool isBinary = GetBool(doc.RootElement, "binary");
+                        bool isDirectory = GetBool(doc.RootElement, "directory");
                         if (path is not null)
                         {
-                            HandlePreviewAsync(path, line, isBinary).Forget();
+                            HandlePreviewAsync(path, line, isBinary, isDirectory).Forget();
                         }
 
                         break;
@@ -375,13 +386,23 @@ internal static class SeekyModalWindowManager
                     {
                         string? path = GetString(doc.RootElement, "path");
                         int? line = GetInt(doc.RootElement, "line");
-                        SeekyLog.Info($"WebMessageReceived: open '{path}' line {line}");
+                        bool isDirectory = GetBool(doc.RootElement, "directory");
+                        SeekyLog.Info($"WebMessageReceived: open '{path}' line {line} dir={isDirectory}");
 
                         // Close the popup immediately (telescope behavior). The VS document-open
                         // call hangs when awaited on this UI thread, so it runs on the threadpool
                         // in the background — it must never block window teardown.
                         HidePopup();
-                        Task.Run(() => HandleOpenAsync(path, line)).Forget();
+                        if (isDirectory && path is not null && workspaceDir is not null)
+                        {
+                            string absoluteDir = Path.Combine(workspaceDir, path);
+                            Process.Start(new ProcessStartInfo("explorer.exe", $"\"{absoluteDir}\"") { UseShellExecute = true });
+                        }
+                        else
+                        {
+                            Task.Run(() => HandleOpenAsync(path, line)).Forget();
+                        }
+
                         break;
                     }
 
@@ -594,10 +615,81 @@ internal static class SeekyModalWindowManager
         return null;
     }
 
+    /// <summary>
+    /// The VS active document as a workspace-relative path ('/' separators), for fff's
+    /// current_file deprioritization. Null when unavailable or outside the workspace.
+    /// </summary>
+    private static async Task<string?> GetActiveDocumentRelativePathAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (extensibility is null || lastClientContext is null || workspaceDir is null)
+            {
+                return null;
+            }
+
+            using ITextViewSnapshot? textView =
+                await extensibility.Editor().GetActiveTextViewAsync(lastClientContext, cancellationToken);
+            Uri? documentUri = textView?.Document?.Uri;
+            if (documentUri is null || !documentUri.IsFile)
+            {
+                return null;
+            }
+
+            string fullPath = documentUri.LocalPath;
+            string root = workspaceDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            if (!fullPath.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            return fullPath[root.Length..].Replace(Path.DirectorySeparatorChar, '/');
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return null;
+        }
+        catch (Exception ex)
+        {
+            SeekyLog.Error("Active document path query failed", ex);
+            return null;
+        }
+    }
+
+    /// <summary>Posts past queries (fff history LMDB, populated by track_query picks) to the
+    /// page for ↑ history cycling. Best-effort; history is empty until the first picks.</summary>
+    private static async Task PostHistoryAsync()
+    {
+        try
+        {
+            if (workspaceDir is null)
+            {
+                return;
+            }
+
+            await FffClient.StartAsync(workspaceDir, null, CancellationToken.None);
+            IReadOnlyList<string> queries = await FffClient.GetHistoryAsync(50, CancellationToken.None);
+            PostJson(new { type = "history", queries });
+        }
+        catch (Exception ex)
+        {
+            SeekyLog.Error("history fetch failed", ex);
+        }
+    }
+
     private static async Task HandleSearchAsync(string query, string mode, string grepMode)
     {
         int generation = Interlocked.Increment(ref searchGeneration);
         lastSearchQuery = query;
+        using var searchTokenSource = new CancellationTokenSource();
+        CancellationTokenSource? previousSearch = Interlocked.Exchange(ref searchCancellation, searchTokenSource);
+        if (previousSearch is not null)
+        {
+            await previousSearch.CancelAsync();
+            previousSearch.Dispose();
+        }
+
+        CancellationToken cancellationToken = searchTokenSource.Token;
         var stopwatch = Stopwatch.StartNew();
         try
         {
@@ -608,7 +700,7 @@ internal static class SeekyModalWindowManager
             }
 
             // No-op when already indexed; restarts the index if the workspace changed.
-            await FffClient.StartAsync(workspaceDir, PostStatus, CancellationToken.None);
+            await FffClient.StartAsync(workspaceDir, PostStatus, cancellationToken);
 
             const int maxResults = 100;
             List<object> items;
@@ -630,7 +722,7 @@ internal static class SeekyModalWindowManager
                         _ => FffNativeClient.GrepMode.Plain,
                     };
                     FffNativeClient.GrepResult result =
-                        await FffClient.GrepAsync(query, nativeMode, maxResults, CancellationToken.None);
+                        await FffClient.GrepAsync(query, nativeMode, maxResults, cancellationToken);
                     if (result.RegexFallbackError is not null)
                     {
                         PostStatus($"regex error (fell back to literal): {result.RegexFallbackError}");
@@ -658,7 +750,7 @@ internal static class SeekyModalWindowManager
                 // "Git Modified": fuzzy file search filtered to files with a git status
                 // (empty query → all modified files, frecency-ranked — see FffNativeClient).
                 IReadOnlyList<FffNativeClient.FileItem> files =
-                    await FffClient.GitModifiedAsync(query, maxResults, CancellationToken.None);
+                    await FffClient.GitModifiedAsync(query, maxResults, cancellationToken);
                 items = files
                     .Select(f => (object)new
                     {
@@ -670,10 +762,27 @@ internal static class SeekyModalWindowManager
                     })
                     .ToList();
             }
+            else if (mode == "dirs")
+            {
+                // Directory search: fuzzy over indexed directories. Opening reveals the folder.
+                string? currentDir = await GetActiveDocumentRelativePathAsync(cancellationToken);
+                IReadOnlyList<FffNativeClient.DirItem> dirs =
+                    await FffClient.FindDirectoriesAsync(query, currentDir, maxResults, cancellationToken);
+                items = dirs
+                    .Select(d => (object)new
+                    {
+                        name = d.Path,
+                        path = d.Path,
+                        isDirectory = true,
+                    })
+                    .ToList();
+            }
             else
             {
+                // current_file deprioritizes the file already open in VS (alternate-file workflow).
+                string? currentFile = await GetActiveDocumentRelativePathAsync(cancellationToken);
                 IReadOnlyList<FffNativeClient.FileItem> files =
-                    await FffClient.FindFilesAsync(query, maxResults, CancellationToken.None);
+                    await FffClient.FindFilesAsync(query, currentFile, maxResults, cancellationToken);
                 items = files
                     .Select(f => (object)new
                     {
@@ -686,7 +795,7 @@ internal static class SeekyModalWindowManager
                     .ToList();
             }
 
-            if (generation != searchGeneration)
+            if (cancellationToken.IsCancellationRequested || generation != searchGeneration)
             {
                 SeekyLog.Info($"Search '{query}' ({mode}/{grepMode}): discarded stale results ({items.Count} items)");
                 return;
@@ -702,19 +811,43 @@ internal static class SeekyModalWindowManager
                 items,
             });
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            SeekyLog.Info($"Search '{query}' ({mode}/{grepMode}): cancelled");
+        }
         catch (Exception ex)
         {
             SeekyLog.Error($"Search '{query}' ({mode}/{grepMode}) failed", ex);
             PostStatus("search failed: " + ex.Message);
         }
+        finally
+        {
+            _ = Interlocked.CompareExchange(ref searchCancellation, null, searchTokenSource);
+        }
     }
 
-    private static async Task HandlePreviewAsync(string path, int? line, bool isBinary)
+    private static async Task HandlePreviewAsync(string path, int? line, bool isBinary, bool isDirectory)
     {
         try
         {
             if (workspaceDir is null)
             {
+                return;
+            }
+
+            // Directories: list their entries (dirs first, then files) instead of file content.
+            if (isDirectory)
+            {
+                string absoluteDir = Path.Combine(workspaceDir, path);
+                if (!Directory.Exists(absoluteDir))
+                {
+                    return;
+                }
+
+                var listing = Directory.GetDirectories(absoluteDir).Select(d => Path.GetFileName(d) + "/")
+                    .Concat(Directory.GetFiles(absoluteDir).Select(Path.GetFileName)!)
+                    .Take(300);
+                PostJson(new { type = "preview", path, content = string.Join('\n', listing) });
                 return;
             }
 

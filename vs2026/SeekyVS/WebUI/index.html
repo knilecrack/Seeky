@@ -166,21 +166,27 @@
       }
 
     Message contract:
-      page -> host: { type: 'search', query, mode, grepMode }   mode: 'files' | 'grep';
+      page -> host: { type: 'search', query, mode, grepMode }   mode: 'files' | 'grep' | 'git' | 'dirs';
                                                                 grepMode: 'plain' | 'regex' | 'fuzzy'
-                    { type: 'preview', path, line? }
-                    { type: 'open', path, line? }
+                    { type: 'preview', path, line?, binary?, directory? }
+                    { type: 'open', path, line?, directory? }   directory=true opens the folder
+                                                                in Windows Explorer
                     { type: 'close' }
       host -> page: { type: 'results', items, done, capped, duration }
-                    items: [{ name, path, line?, col?, text?, frecency?, ranges? }]
-                    (files: name=path; grep: +line/col/text and ranges = [start,end) char indices
-                    into text for .mhl span highlighting, grep only, may be [])
-                    { type: 'preview', path, content, line? }
+                    items: [{ name, path, line?, col?, text?, frecency?, ranges?,
+                              gitStatus?, isBinary?, isDefinition?, isDirectory? }]
+                    (files/git: name=path; dirs: +isDirectory; grep: +line/col/text and
+                    ranges = [start,end) char indices into text for .mhl span highlighting,
+                    grep only, may be [])
+                    { type: 'preview', path, content, line? }   dirs: content = entry listing
+                    { type: 'preview', path, binary: true }     binary files: no content
                     { type: 'status', message }
                     { type: 'reset' }                      clean slate each time the popup is shown
-                    { type: 'setMode', mode }              mode: 'files' | 'grep' (sent with 'reset'
-                                                           when a Seeky: Find Files / Live Grep
-                                                           command shows the popup)
+                    { type: 'setMode', mode }              sent with 'reset' when a command
+                                                           shows the popup
+                    { type: 'history', queries }           past queries (fff track_query
+                                                           history), most recent first;
+                                                           ↑ in an empty prompt cycles them
                     { type: 'setFont', fontFamily }        CSS font-family value from
                                                            %LOCALAPPDATA%\SeekyVS\settings.json
 
@@ -216,6 +222,8 @@
       var mode = 'files'; // 'files' | 'grep' | 'git'
       var grepMode = 'fuzzy'; // 'plain' | 'regex' | 'fuzzy' (fuzzy is fff's signature mode)
       var defsOnly = false;   // Ctrl+D: grep rows filtered to definitions (resets per search)
+      var history = [];       // past queries from fff (most recent first)
+      var historyIndex = -1;  // -1 = not navigating history
       var items = [];
       var rowByIndex = []; // item index -> DOM row (group headers shift positions)
       var selected = -1;
@@ -256,11 +264,13 @@
           ? 'Find Files'
           : mode === 'git'
             ? 'Git Modified'
-            : 'Live Grep (' + grepMode + ')';
+            : mode === 'dirs'
+                ? 'Directories'
+                : `Live Grep (${grepMode})`;
       }
 
       function toggleMode() {
-        mode = mode === 'files' ? 'grep' : mode === 'grep' ? 'git' : 'files';
+        mode = mode === 'files' ? 'grep' : mode === 'grep' ? 'git' : mode === 'git' ? 'dirs' : 'files';
         updatePromptLabel();
         sendSearch();
       }
@@ -270,7 +280,7 @@
       // every show, so the page is already in a clean state, and if 'setMode' races ahead
       // of 'reset' it must not clobber an in-flight typed query.
       function applyMode(newMode) {
-        if (newMode !== 'files' && newMode !== 'grep' && newMode !== 'git') {
+        if (newMode !== 'files' && newMode !== 'grep' && newMode !== 'git' && newMode !== 'dirs') {
           return;
         }
         mode = newMode;
@@ -361,7 +371,7 @@
         else if (s.indexOf('del') >= 0) { cls = 'm'; text = 'D'; }
         else if (s.indexOf('ren') >= 0) { cls = 'dim'; text = 'R'; }
         var badge = document.createElement('span');
-        badge.className = 'git-badge ' + cls;
+        badge.className = `git-badge ${cls}`;
         badge.textContent = text;
         badge.title = status;
         return badge;
@@ -381,14 +391,13 @@
             lastGroupPath = item.path;
             var header = document.createElement('div');
             header.className = 'group-header';
+            header.setAttribute('data-path', item.path);
             header.textContent = item.path;
-            (function (p) {
-              header.addEventListener('dblclick', function () { send({ type: 'open', path: p }); });
-            })(item.path);
             resultsEl.appendChild(header);
           }
           var row = document.createElement('div');
           row.className = 'row' + (mode === 'grep' ? ' match' : '') + (index === selected ? ' selected' : '');
+          row.setAttribute('data-index', String(index));
           var badge = gitBadge(item.gitStatus);
           if (badge) {
             row.appendChild(badge);
@@ -408,12 +417,9 @@
             appendHighlightedSegments(text, item.text || '', item.ranges);
             row.appendChild(text);
           } else {
-            row.appendChild(document.createTextNode(item.path));
+            // Directory rows render with a trailing slash for distinction.
+            row.appendChild(document.createTextNode(item.isDirectory ? item.path + '/' : item.path));
           }
-          (function (i) {
-            row.addEventListener('click', function () { select(i); });
-            row.addEventListener('dblclick', function () { openSelected(); });
-          })(index);
           rowByIndex[index] = row;
           resultsEl.appendChild(row);
         }
@@ -433,7 +439,7 @@
           var line = document.createElement('span');
           line.className = 'line';
           if (index + 1 === matchLine) {
-            line.className += ' hl';
+            line.className = `${line.className} hl`;
             hl = line;
             // Span-level highlight of the match ranges within the match line (grep only).
             var sel = items[selected];
@@ -462,16 +468,34 @@
           previewContentEl.textContent = 'binary file — no preview';
           return;
         }
-        send({ type: 'preview', path: item.path, line: item.line, binary: item.isBinary === true });
+        send({ type: 'preview', path: item.path, line: item.line, binary: item.isBinary === true, directory: item.isDirectory === true });
       }
 
       function select(index) {
         if (index < 0 || index >= items.length) {
           return;
         }
+
+        var previous = selected;
         selected = index;
-        renderResults();
-        var row = rowByIndex[index];
+
+        if (previous !== selected) {
+          var previousRow = rowByIndex[previous];
+          if (previousRow) {
+            previousRow.classList.remove('selected');
+          }
+          var selectedRow = rowByIndex[selected];
+          if (selectedRow) {
+            selectedRow.classList.add('selected');
+          }
+        }
+
+        var row = rowByIndex[selected];
+        if (!row) {
+          renderResults();
+          row = rowByIndex[selected];
+        }
+
         if (row) {
           row.scrollIntoView({ block: 'nearest' });
         }
@@ -481,13 +505,60 @@
       function openSelected() {
         var item = items[selected];
         if (item) {
-          send({ type: 'open', path: item.path, line: item.line });
+          send({ type: 'open', path: item.path, line: item.line, directory: item.isDirectory === true });
         }
       }
 
+      resultsEl.addEventListener('click', function (e) {
+        var target = e.target;
+        if (!(target instanceof Element)) {
+          return;
+        }
+
+        var row = target.closest('.row');
+        if (!row || !resultsEl.contains(row)) {
+          return;
+        }
+
+        var index = Number(row.getAttribute('data-index'));
+        if (Number.isInteger(index)) {
+          select(index);
+        }
+      });
+
+      resultsEl.addEventListener('dblclick', function (e) {
+        var target = e.target;
+        if (!(target instanceof Element)) {
+          return;
+        }
+
+        var header = target.closest('.group-header');
+        if (header && resultsEl.contains(header)) {
+          var path = header.getAttribute('data-path');
+          if (path) {
+            send({ type: 'open', path: path });
+          }
+          return;
+        }
+
+        var row = target.closest('.row');
+        if (!row || !resultsEl.contains(row)) {
+          return;
+        }
+
+        var index = Number(row.getAttribute('data-index'));
+        if (Number.isInteger(index)) {
+          select(index);
+          openSelected();
+        }
+      });
+
       // ---------------------------------------------------------------- input
 
-      queryEl.addEventListener('input', scheduleSearch);
+      queryEl.addEventListener('input', function () {
+        historyIndex = -1; // typing abandons history navigation
+        scheduleSearch();
+      });
 
       queryEl.addEventListener('keydown', function (e) {
         var key = e.key;
@@ -502,11 +573,29 @@
           toggleDefsOnly();
         } else if (key === 'ArrowDown' || (key === 'j' && e.ctrlKey)) {
           e.preventDefault();
-          // column-reverse: visually down = lower index (toward the prompt)
-          select(Math.max(selected - 1, 0));
+          if (historyIndex >= 0) {
+            // History nav: move newer; past the newest entry clears the input.
+            historyIndex--;
+            queryEl.value = historyIndex >= 0 ? history[historyIndex] : '';
+            sendSearch();
+          } else if (queryEl.value === '' && history.length > 0) {
+            return; // empty prompt: stay put, don't move a nonexistent selection
+          } else {
+            // column-reverse: visually down = lower index (toward the prompt)
+            select(Math.max(selected - 1, 0));
+          }
         } else if (key === 'ArrowUp' || (key === 'k' && e.ctrlKey)) {
           e.preventDefault();
-          select(Math.min(selected + 1, items.length - 1));
+          if (queryEl.value === '' || historyIndex >= 0) {
+            // Empty prompt (or already navigating): cycle past queries, telescope-style.
+            if (history.length > 0 && historyIndex < history.length - 1) {
+              historyIndex++;
+              queryEl.value = history[historyIndex];
+              sendSearch();
+            }
+          } else {
+            select(Math.min(selected + 1, items.length - 1));
+          }
         } else if (key === 'Enter') {
           e.preventDefault();
           openSelected();
@@ -548,14 +637,19 @@
             queryEl.value = '';
             items = [];
             defsOnly = false;
+            historyIndex = -1;
             selected = -1;
             renderResults();
             previewTitleEl.textContent = '';
             previewContentEl.textContent = '';
-            statusEl.textContent = 'type to search — Tab cycles Files/Grep/Git · Ctrl+R grep mode · Ctrl+D defs only';
+            statusEl.textContent = 'type to search — Tab cycles Files/Grep/Git/Dirs · Ctrl+R grep mode · Ctrl+D defs · ↑ history';
             queryEl.focus();
           } else if (message.type === 'setMode') {
             applyMode(message.mode);
+          } else if (message.type === 'history') {
+            // Past queries (fff track_query history); ↑ in an empty prompt cycles them.
+            history = message.queries || [];
+            historyIndex = -1;
           } else if (message.type === 'setFont') {
             // Host-sanitized CSS font-family value (settings.json); apply to the root.
             if (typeof message.fontFamily === 'string' && message.fontFamily.length > 0) {
@@ -571,7 +665,7 @@
       if (!bridge) {
         statusEl.textContent = 'WebView2 host bridge NOT available';
       } else {
-        statusEl.textContent = 'type to search — Tab cycles Files/Grep/Git · Ctrl+R grep mode · Ctrl+D defs only';
+        statusEl.textContent = 'type to search — Tab cycles Files/Grep/Git/Dirs · Ctrl+R grep mode · Ctrl+D defs · ↑ history';
         // No initial search — the window opens clean and searches only once the user types.
       }
     })();
