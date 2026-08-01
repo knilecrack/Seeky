@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -49,8 +50,13 @@ internal sealed partial class FffNativeClient : IDisposable
     /// <summary>A fuzzy file-search result.</summary>
     internal readonly record struct FileItem(string Path, long FrecencyScore);
 
-    /// <summary>A single grep match.</summary>
-    internal readonly record struct GrepMatch(string Path, int Line, string Text, int Col);
+    /// <summary>
+    /// A single grep match. <paramref name="Ranges"/> holds the highlight spans as
+    /// (start, end) UTF-16 char indices into <paramref name="Text"/> (the native side reports
+    /// them as byte offsets into the UTF-8 line; converted here). Empty when the backend
+    /// provides no ranges.
+    /// </summary>
+    internal readonly record struct GrepMatch(string Path, int Line, string Text, int Col, (int Start, int End)[] Ranges);
 
     /// <summary>Grep results plus the regex-fallback notice, if any.</summary>
     internal sealed record GrepResult(IReadOnlyList<GrepMatch> Matches, string? RegexFallbackError);
@@ -160,11 +166,13 @@ internal sealed partial class FffNativeClient : IDisposable
                                 continue;
                             }
 
+                            string text = PtrToString(Native.fff_grep_match_get_line_content(match)) ?? string.Empty;
                             matches.Add(new GrepMatch(
                                 path,
                                 checked((int)Native.fff_grep_match_get_line_number(match)),
-                                PtrToString(Native.fff_grep_match_get_line_content(match)) ?? string.Empty,
-                                (int)Native.fff_grep_match_get_col(match)));
+                                text,
+                                (int)Native.fff_grep_match_get_col(match),
+                                ReadMatchRanges(match, text)));
                         }
 
                         return new GrepResult(matches, fallbackError);
@@ -341,6 +349,52 @@ internal sealed partial class FffNativeClient : IDisposable
         }
     }
 
+    /// <summary>
+    /// Reads a grep match's highlight spans. Native <c>FffMatchRange</c> values are BYTE offsets
+    /// into the UTF-8 line, but the page works in UTF-16 char indices: the line is re-encoded
+    /// to UTF-8 and each byte offset is mapped by decoding the prefix
+    /// (<c>Encoding.UTF8.GetCharCount</c>). Offsets are clamped defensively (including
+    /// mid-multibyte cuts and swapped ends); degenerate spans are dropped. The returned ranges
+    /// borrow from the parent <c>FffGrepResult</c> — call only while it is alive; there is no
+    /// separate free for them.
+    /// </summary>
+    private static (int Start, int End)[] ReadMatchRanges(IntPtr match, string lineText)
+    {
+        uint count = Native.fff_grep_match_get_match_ranges_count(match);
+        if (count == 0 || lineText.Length == 0)
+        {
+            return [];
+        }
+
+        byte[] utf8 = Encoding.UTF8.GetBytes(lineText);
+        var ranges = new List<(int Start, int End)>((int)count);
+        for (uint i = 0; i < count; i++)
+        {
+            IntPtr rangePtr = Native.fff_grep_match_get_match_range(match, i);
+            if (rangePtr == IntPtr.Zero)
+            {
+                continue;
+            }
+
+            FffMatchRange range = Marshal.PtrToStructure<FffMatchRange>(rangePtr);
+            int startByte = (int)Math.Min(range.Start, (uint)utf8.Length);
+            int endByte = (int)Math.Min(range.End, (uint)utf8.Length);
+            if (endByte < startByte)
+            {
+                (startByte, endByte) = (endByte, startByte);
+            }
+
+            int start = Encoding.UTF8.GetCharCount(utf8, 0, startByte);
+            int end = Encoding.UTF8.GetCharCount(utf8, 0, endByte);
+            if (end > start)
+            {
+                ranges.Add((start, end));
+            }
+        }
+
+        return [.. ranges];
+    }
+
     // ------------------------------------------------------------------ helpers
 
     /// <summary>
@@ -502,6 +556,12 @@ internal sealed partial class FffNativeClient : IDisposable
 
         [LibraryImport(LibraryName)]
         internal static partial uint fff_grep_match_get_col(IntPtr match);
+
+        [LibraryImport(LibraryName)]
+        internal static partial uint fff_grep_match_get_match_ranges_count(IntPtr match);
+
+        [LibraryImport(LibraryName)]
+        internal static partial IntPtr fff_grep_match_get_match_range(IntPtr match, uint index);
     }
 
     // Blittable mirror of FffCreateOptions (cbindgen, x64 layout; C99 bool = 1 byte → byte).
@@ -534,5 +594,13 @@ internal sealed partial class FffNativeClient : IDisposable
         internal byte IsScanning;
         internal byte IsWatcherReady;
         internal byte IsWarmupComplete;
+    }
+
+    // Blittable mirror of FffMatchRange (two uint32s, byte offsets into the UTF-8 line).
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FffMatchRange
+    {
+        internal uint Start;
+        internal uint End;
     }
 }

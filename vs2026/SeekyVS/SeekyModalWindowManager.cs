@@ -192,6 +192,7 @@ internal static class SeekyModalWindowManager
             RefreshWorkspaceAsync().Forget();
             PostJson(new { type = "reset" });
             PostJson(new { type = "setMode", mode = requestedMode });
+            PostJson(new { type = "setFont", fontFamily = ResolveFontFamily() });
             FocusPopup();
             return;
         }
@@ -276,6 +277,7 @@ internal static class SeekyModalWindowManager
         {
             SeekyLog.Info($"DOMContentLoaded: posting setMode '{requestedMode}'");
             PostJson(new { type = "setMode", mode = requestedMode });
+            PostJson(new { type = "setFont", fontFamily = ResolveFontFamily() });
         };
         coreWebView.Navigate("https://seeky.vs/index.html");
         SeekyLog.Info($"ShowCore: navigated to https://seeky.vs/index.html (mapped to '{webUiDir}')");
@@ -413,6 +415,74 @@ internal static class SeekyModalWindowManager
         coreWebView?.PostWebMessageAsJson(JsonSerializer.Serialize(message));
 
     private static void PostStatus(string message) => PostJson(new { type = "status", message });
+
+    private const string MonoFontStack = "'Cascadia Code', Consolas, 'Courier New', monospace";
+    private const string SystemFontStack = "'Segoe UI', system-ui, sans-serif";
+
+    /// <summary>
+    /// Resolves the popup font from <c>%LOCALAPPDATA%\SeekyVS\settings.json</c>
+    /// (<c>{ "fontFamily": "…" }</c>), re-read on every popup show so edits apply without
+    /// restarting VS. Keywords: <c>mono</c> (default) and <c>system</c>; any other string is
+    /// used verbatim as a CSS font-family value after sanitizing (it is injected into an inline
+    /// style). Missing/malformed/unsafe values fall back to the mono stack.
+    /// </summary>
+    private static string ResolveFontFamily()
+    {
+        string settingsPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "SeekyVS",
+            "settings.json");
+        try
+        {
+            if (!File.Exists(settingsPath))
+            {
+                // Seed a discoverable default once; ignore failures (dir may not exist yet).
+                try
+                {
+                    File.WriteAllText(settingsPath, "{\n  \"fontFamily\": \"mono\"\n}\n");
+                }
+                catch (Exception ex)
+                {
+                    SeekyLog.Error("settings.json: writing the default file failed", ex);
+                }
+
+                return MonoFontStack;
+            }
+
+            using JsonDocument settings = JsonDocument.Parse(File.ReadAllText(settingsPath));
+            string? fontFamily =
+                settings.RootElement.TryGetProperty("fontFamily", out JsonElement element)
+                && element.ValueKind == JsonValueKind.String
+                    ? element.GetString()?.Trim()
+                    : null;
+
+            if (string.IsNullOrEmpty(fontFamily) || fontFamily.Equals("mono", StringComparison.OrdinalIgnoreCase))
+            {
+                return MonoFontStack;
+            }
+
+            if (fontFamily.Equals("system", StringComparison.OrdinalIgnoreCase))
+            {
+                return SystemFontStack;
+            }
+
+            // Verbatim values land in an inline style — reject anything that could break out
+            // of the CSS declaration.
+            if (fontFamily.Any(c => c is ';' or '{' or '}' or '<' or '>' or '"' or '\'' || char.IsControl(c)))
+            {
+                SeekyLog.Info($"settings.json: rejecting unsafe fontFamily value '{fontFamily}'");
+                return MonoFontStack;
+            }
+
+            SeekyLog.Info($"settings.json: fontFamily '{fontFamily}'");
+            return fontFamily;
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
+        {
+            SeekyLog.Error($"settings.json: unreadable ({settingsPath})", ex);
+            return MonoFontStack;
+        }
+    }
 
     /// <summary>
     /// Re-resolves the workspace directory on every popup show (the user may have opened a
@@ -558,7 +628,16 @@ internal static class SeekyModalWindowManager
                     }
 
                     items = result.Matches
-                        .Select(m => (object)new { name = m.Text, path = m.Path, line = m.Line, col = m.Col, text = m.Text })
+                        .Select(m => (object)new
+                        {
+                            name = m.Text,
+                            path = m.Path,
+                            line = m.Line,
+                            col = m.Col,
+                            text = m.Text,
+                            // (start, end) UTF-16 char-index pairs into 'text' for highlighting.
+                            ranges = m.Ranges.Select(r => new[] { r.Start, r.End }).ToArray(),
+                        })
                         .ToList();
                 }
             }

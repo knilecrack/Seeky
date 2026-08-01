@@ -106,6 +106,12 @@
     }
     #preview-content .line { display: block; white-space: pre; }
     #preview-content .line.hl { background: var(--hl); }
+    /* Span-level match highlight (grep match ranges, char indices from fff-c) */
+    .mhl {
+      background: var(--accent);
+      color: var(--bg);
+      border-radius: 2px;
+    }
     /* Status line at the bottom — result count / indexing / errors */
     #status {
       padding: 4px 10px;
@@ -144,13 +150,17 @@
                     { type: 'open', path, line? }
                     { type: 'close' }
       host -> page: { type: 'results', items, done, capped, duration }
-                    items: [{ name, path, line?, col?, text?, frecency? }]  (files: name=path; grep: +line/col/text)
+                    items: [{ name, path, line?, col?, text?, frecency?, ranges? }]
+                    (files: name=path; grep: +line/col/text; ranges = [start,end) char indices
+                    into text for .mhl span highlighting, grep only, may be [])
                     { type: 'preview', path, content, line? }
                     { type: 'status', message }
                     { type: 'reset' }                      clean slate each time the popup is shown
                     { type: 'setMode', mode }              mode: 'files' | 'grep' (sent with 'reset'
                                                            when a Seeky: Find Files / Live Grep
                                                            command shows the popup)
+                    { type: 'setFont', fontFamily }        CSS font-family value from
+                                                           %LOCALAPPDATA%\SeekyVS\settings.json
 
     SECURITY: all file content and query text is untrusted workspace data — it only ever enters
     the DOM via textContent (never innerHTML).
@@ -247,6 +257,34 @@
       // ---------------------------------------------------------------- rendering
       // Everything below builds DOM with textContent only — workspace content is untrusted.
 
+      // Appends `text` to `parent`, wrapping each [start,end) char-index range in a .mhl
+      // highlight span. Ranges are clamped and overlaps skipped defensively.
+      function appendHighlightedSegments(parent, text, ranges) {
+        if (!ranges || ranges.length === 0 || text.length === 0) {
+          parent.appendChild(document.createTextNode(text));
+          return;
+        }
+        var sorted = ranges.slice().sort(function (a, b) { return a[0] - b[0]; });
+        var cursor = 0;
+        sorted.forEach(function (range) {
+          var s = Math.max(0, Math.min(range[0], text.length));
+          var e = Math.max(0, Math.min(range[1], text.length));
+          if (s < cursor) { s = cursor; }
+          if (e <= s) { return; }
+          if (s > cursor) {
+            parent.appendChild(document.createTextNode(text.slice(cursor, s)));
+          }
+          var span = document.createElement('span');
+          span.className = 'mhl';
+          span.textContent = text.slice(s, e);
+          parent.appendChild(span);
+          cursor = e;
+        });
+        if (cursor < text.length) {
+          parent.appendChild(document.createTextNode(text.slice(cursor)));
+        }
+      }
+
       function renderResults() {
         resultsEl.textContent = '';
         rowByIndex = [];
@@ -273,7 +311,7 @@
             loc.textContent = item.line + ': ';
             row.appendChild(loc);
             var text = document.createElement('span');
-            text.textContent = item.text || '';
+            appendHighlightedSegments(text, item.text || '', item.ranges);
             row.appendChild(text);
           } else {
             row.textContent = item.path;
@@ -298,6 +336,13 @@
           if (index + 1 === matchLine) {
             line.className += ' hl';
             hl = line;
+            // Span-level highlight of the match ranges within the match line (grep only).
+            var sel = items[selected];
+            if (mode === 'grep' && sel && sel.ranges && sel.ranges.length > 0) {
+              appendHighlightedSegments(line, lineText, sel.ranges);
+              previewContentEl.appendChild(line);
+              return;
+            }
           }
           line.textContent = lineText;
           previewContentEl.appendChild(line);
@@ -395,6 +440,11 @@
             queryEl.focus();
           } else if (message.type === 'setMode') {
             applyMode(message.mode);
+          } else if (message.type === 'setFont') {
+            // Host-sanitized CSS font-family value (settings.json); apply to the root.
+            if (typeof message.fontFamily === 'string' && message.fontFamily.length > 0) {
+              document.body.style.fontFamily = message.fontFamily;
+            }
           } else if (message.type === 'setQuery') {
             queryEl.value = message.query || '';
             sendSearch();

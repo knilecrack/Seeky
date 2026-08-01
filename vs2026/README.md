@@ -210,6 +210,12 @@ fff's signature **fuzzy grep** mode plus frecency learning. `FffNativeClient` im
   **0 = plain (true literal SIMD), 1 = regex, 2 = fuzzy** — the query is passed raw; fff parses
   `*.cs pattern`-style constraints itself. (The MCP build needed manual regex-escaping for plain
   mode; native mode 0 made that code unnecessary and it was deleted.)
+- **Match highlighting**: per-match `FffMatchRange` spans (`fff_grep_match_get_match_ranges_count`
+  / `_get_match_range`) are read for grep results. They arrive as **byte offsets into the UTF-8
+  line** and are converted in C# to UTF-16 char indices (re-encode the line with
+  `Encoding.UTF8.GetBytes`, map each offset with `Encoding.UTF8.GetCharCount` on the prefix,
+  clamp defensively) before being posted as `ranges` — the page wraps them in `.mhl` highlight
+  spans in result rows and on the preview's match line. File-search results carry no ranges.
 - **Workspace resolution** (unchanged): open solution's directory via
   `Workspaces().QuerySolutionAsync`, 'Open Folder' root, active document's directory; with
   neither, the UI shows "no workspace open".
@@ -231,10 +237,13 @@ Host → page:
 
 ```json
 { "type": "results", "items": [ { "name": "…", "path": "src/a.cs", "line": 42, "col": 7,
-                                  "text": "…", "frecency": 3 } ],
+                                  "text": "…", "frecency": 3,
+                                  "ranges": [[4, 9], [12, 16]] } ],
   "done": true, "capped": false, "duration": 12 }
                                                     // files mode: name=path, frecency only;
-                                                    // grep mode: +line/col/text
+                                                    // grep mode: +line/col/text and `ranges`:
+                                                    // [start,end) UTF-16 char indices into `text`
+                                                    // for match highlighting (may be [])
 { "type": "preview", "path": "src/a.cs", "content": "…file text (capped 200KB/2000 lines)…",
   "line": 42 }                                      // line optional (null for files mode)
 { "type": "status",  "message": "indexing…" }       // status-line text: indexing, errors, etc.
@@ -243,6 +252,29 @@ Host → page:
 ```
 
 Stale search responses are discarded with a generation counter (new keystroke wins).
+
+### Settings file
+
+User settings live in **`%LOCALAPPDATA%\SeekyVS\settings.json`**, re-read on **every popup
+show** (edit it, reopen the popup — no VS restart needed). Only one setting so far:
+
+```json
+{
+  "fontFamily": "mono"
+}
+```
+
+- `"mono"` (or the file/key missing) → `'Cascadia Code', Consolas, 'Courier New', monospace` —
+  the default.
+- `"system"` → `'Segoe UI', system-ui, sans-serif` — the Windows system UI font stack.
+- Any other string is used verbatim as the CSS `font-family` value, e.g.
+  `{ "fontFamily": "'JetBrains Mono', 'Cascadia Code', monospace" }`. Values containing
+  `;{}<>"'` or control characters are rejected (CSS-injection guard, logged) and the default is
+  used.
+
+If the file doesn't exist, a default `{ "fontFamily": "mono" }` is written once so the file is
+discoverable. Malformed JSON is logged and ignored (default applies). The resolved value is
+posted to the page as `{ "type": "setFont", "fontFamily": "…" }`.
 
 ## Open questions
 
@@ -303,9 +335,11 @@ the VS main window, showing the Telescope-style search UI (`https://seeky.vs/ind
   workspace-relative paths from fff; the first result is selected and its file content shows
   in the preview pane (right).
 - **Live Grep:** press **Tab** (or Ctrl+G) — the prompt label switches to "Live Grep (fuzzy)> ";
-  typing shows `path:line: matched text` rows; the preview highlights the match line and scrolls
-  to it. **Ctrl+R** cycles the sub-mode: plain (literal) → regex → fuzzy (default). Fuzzy demo:
-  searching `shwcr` should match `ShowCoreAsync`-style identifiers that plain/regex would miss.
+  typing shows `path:line: matched text` rows with the matched span highlighted in accent blue;
+  the preview highlights the match line and scrolls to it, with the matched span also
+  highlighted inside the line. **Ctrl+R** cycles the sub-mode: plain (literal) → regex → fuzzy (default). Fuzzy demo:
+  searching `shwcr` should match `ShowCoreAsync`-style identifiers that plain/regex would miss —
+  with the matched letters/span highlighted in the row and in the preview.
 - **Navigation:** ↑/↓ or Ctrl+J/K moves the selection (preview follows); **Enter** opens the file
   in VS at the match line and closes the popup; **Esc** closes the popup (single Esc now).
 - Re-running the command reopens the window; running it while open just activates/focuses it.
