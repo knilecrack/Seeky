@@ -85,6 +85,7 @@ azure-pipelines.yml       CI/CD (Azure DevOps)
 fff_mcp.ps1               Standalone PowerShell installer for the fff-mcp binary (not part of
                           the extension runtime; excluded from the .vsix)
 User/fff-mcp.exe          Local fff-mcp binary copy (excluded from the .vsix)
+vs2026/                   Visual Studio 2026 port spike — see vs2026/README.md
 ```
 
 Supporting docs: `new-command-instructions.md` (step-by-step guide for adding commands),

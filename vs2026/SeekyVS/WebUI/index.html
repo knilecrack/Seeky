@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+  <title>Seeky</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #1e1e1e;
+      --bg-alt: #252526;
+      --bg-sel: #094771;
+      --border: #3c3c3c;
+      --fg: #cccccc;
+      --fg-dim: #808080;
+      --accent: #569cd6;
+      --hl: #3a4a2a;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: 'Cascadia Code', Consolas, 'Courier New', monospace;
+      font-size: 13px;
+      overflow: hidden;
+    }
+    /* Prompt row — Telescope bottom style: mode label + "> " + query, at the window's
+       bottom edge with the best result directly above it */
+    #prompt {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 10px;
+      border-top: 1px solid var(--border);
+      background: var(--bg-alt);
+    }
+    #mode-label { color: var(--accent); white-space: nowrap; }
+    #prompt .chevron { color: var(--accent); }
+    #query {
+      flex: 1;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: var(--fg);
+      font: inherit;
+      caret-color: var(--accent);
+    }
+    /* Results (left) + preview (right), roughly 50/50 */
+    #main { flex: 1; display: flex; min-height: 0; }
+    #results {
+      flex: 1;
+      min-width: 0;
+      overflow-y: auto;
+      border-right: 1px solid var(--border);
+      /* Rows are emitted in reverse order by renderResults so the best match is the last
+         (bottom) row, adjacent to the prompt — plain block layout, no flex column-reverse
+         (Chromium renders it glitchy in a scrolling container). */
+    }
+    #results .row {
+      padding: 3px 10px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      cursor: default;
+    }
+    #results .row.selected { background: var(--bg-sel); }
+    #results .dim { color: var(--fg-dim); }
+    /* Grep grouping: file header row above its matches */
+    #results .group-header {
+      padding: 4px 10px 1px;
+      color: var(--accent);
+      font-weight: bold;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      cursor: default;
+    }
+    #results .row.match { padding-left: 22px; }
+    #preview-pane {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    #preview-title {
+      padding: 4px 10px;
+      color: var(--fg-dim);
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #preview-content {
+      flex: 1;
+      margin: 0;
+      padding: 6px 10px;
+      overflow: auto;
+      font: inherit;
+      line-height: 1.45;
+    }
+    #preview-content .line { display: block; white-space: pre; }
+    #preview-content .line.hl { background: var(--hl); }
+    /* Status line at the bottom — result count / indexing / errors */
+    #status {
+      padding: 4px 10px;
+      border-top: 1px solid var(--border);
+      background: var(--bg-alt);
+      color: var(--fg-dim);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+  </style>
+</head>
+<body>
+  <!--
+    SeekyVS spike UI — Telescope-style layout with the prompt at the bottom (results left,
+    preview right, status line above the prompt; best match adjacent to the prompt).
+    Plain JS, no build step, no dependencies.
+
+    The production version is intended to reuse the Seeky VS Code extension's webview client
+    (media/main.js) behind a thin shim that maps VS Code's `acquireVsCodeApi()` onto the WebView2
+    bridge, e.g.:
+
+      function acquireVsCodeApi() {
+        return {
+          postMessage: (m) => window.chrome.webview.postMessage(m),
+          // host messages arrive via window.chrome.webview.addEventListener('message', ...)
+          setState: (s) => { /* map or drop */ },
+          getState: () => null,
+        };
+      }
+
+    Message contract:
+      page -> host: { type: 'search', query, mode, grepMode }   mode: 'files' | 'grep';
+                                                                grepMode: 'plain' | 'regex' | 'fuzzy'
+                    { type: 'preview', path, line? }
+                    { type: 'open', path, line? }
+                    { type: 'close' }
+      host -> page: { type: 'results', items, done, capped, duration }
+                    items: [{ name, path, line?, col?, text?, frecency? }]  (files: name=path; grep: +line/col/text)
+                    { type: 'preview', path, content, line? }
+                    { type: 'status', message }
+                    { type: 'reset' }                      clean slate each time the popup is shown
+                    { type: 'setMode', mode }              mode: 'files' | 'grep' (sent with 'reset'
+                                                           when a Seeky: Find Files / Live Grep
+                                                           command shows the popup)
+
+    SECURITY: all file content and query text is untrusted workspace data — it only ever enters
+    the DOM via textContent (never innerHTML).
+  -->
+  <div id="main">
+    <div id="results"></div>
+    <div id="preview-pane">
+      <div id="preview-title"></div>
+      <pre id="preview-content"></pre>
+    </div>
+  </div>
+  <div id="status">starting…</div>
+  <div id="prompt">
+    <span id="mode-label">Find Files</span>
+    <span class="chevron">&gt;</span>
+    <input id="query" type="text" autocomplete="off" spellcheck="false" autofocus />
+  </div>
+
+  <script>
+    (function () {
+      'use strict';
+
+      var bridge = window.chrome && window.chrome.webview;
+      var queryEl = document.getElementById('query');
+      var modeLabelEl = document.getElementById('mode-label');
+      var resultsEl = document.getElementById('results');
+      var previewTitleEl = document.getElementById('preview-title');
+      var previewContentEl = document.getElementById('preview-content');
+      var statusEl = document.getElementById('status');
+
+      var mode = 'files'; // 'files' | 'grep'
+      var grepMode = 'fuzzy'; // 'plain' | 'regex' | 'fuzzy' (fuzzy is fff's signature mode)
+      var items = [];
+      var rowByIndex = []; // item index -> DOM row (group headers shift positions)
+      var selected = -1;
+      var debounceTimer = null;
+
+      function send(message) {
+        if (bridge) {
+          bridge.postMessage(message);
+        }
+      }
+
+      // ---------------------------------------------------------------- search
+
+      function sendSearch() {
+        var query = queryEl.value;
+        if (query.length === 0) {
+          // Clean state: no query, no search, no results.
+          items = [];
+          selected = -1;
+          renderResults();
+          previewTitleEl.textContent = '';
+          previewContentEl.textContent = '';
+          statusEl.textContent = 'type to search — Tab toggles Find Files / Live Grep, Ctrl+R cycles plain → regex → fuzzy';
+          return;
+        }
+        send({ type: 'search', query: query, mode: mode, grepMode: grepMode });
+      }
+
+      function scheduleSearch() {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(sendSearch, 150);
+      }
+
+      function updatePromptLabel() {
+        modeLabelEl.textContent = mode === 'files' ? 'Find Files' : 'Live Grep (' + grepMode + ')';
+      }
+
+      function toggleMode() {
+        mode = mode === 'files' ? 'grep' : 'files';
+        updatePromptLabel();
+        sendSearch();
+      }
+
+      // Host-driven mode set (Seeky: Find Files / Live Grep commands). Unlike toggleMode,
+      // this never fires a search and never touches the query: the host sends 'reset' on
+      // every show, so the page is already in a clean state, and if 'setMode' races ahead
+      // of 'reset' it must not clobber an in-flight typed query.
+      function applyMode(newMode) {
+        if (newMode !== 'files' && newMode !== 'grep') {
+          return;
+        }
+        mode = newMode;
+        updatePromptLabel();
+      }
+
+      function toggleGrepMode() {
+        grepMode = grepMode === 'plain' ? 'regex' : grepMode === 'regex' ? 'fuzzy' : 'plain';
+        updatePromptLabel();
+        sendSearch();
+      }
+
+      // ---------------------------------------------------------------- rendering
+      // Everything below builds DOM with textContent only — workspace content is untrusted.
+
+      function renderResults() {
+        resultsEl.textContent = '';
+        rowByIndex = [];
+        // Emit worst-first so the best match (index 0) is the bottom row, next to the prompt.
+        // In grep mode, group matches under a header row per file.
+        var lastGroupPath = null;
+        for (var index = items.length - 1; index >= 0; index--) {
+          var item = items[index];
+          if (mode === 'grep' && item.path !== lastGroupPath) {
+            lastGroupPath = item.path;
+            var header = document.createElement('div');
+            header.className = 'group-header';
+            header.textContent = item.path;
+            (function (p) {
+              header.addEventListener('dblclick', function () { send({ type: 'open', path: p }); });
+            })(item.path);
+            resultsEl.appendChild(header);
+          }
+          var row = document.createElement('div');
+          row.className = 'row' + (mode === 'grep' ? ' match' : '') + (index === selected ? ' selected' : '');
+          if (mode === 'grep') {
+            var loc = document.createElement('span');
+            loc.className = 'dim';
+            loc.textContent = item.line + ': ';
+            row.appendChild(loc);
+            var text = document.createElement('span');
+            text.textContent = item.text || '';
+            row.appendChild(text);
+          } else {
+            row.textContent = item.path;
+          }
+          (function (i) {
+            row.addEventListener('click', function () { select(i); });
+            row.addEventListener('dblclick', function () { openSelected(); });
+          })(index);
+          rowByIndex[index] = row;
+          resultsEl.appendChild(row);
+        }
+      }
+
+      function renderPreview(message) {
+        previewTitleEl.textContent = message.path || '';
+        previewContentEl.textContent = '';
+        var matchLine = message.line || 0;
+        var hl = null;
+        (message.content || '').split('\n').forEach(function (lineText, index) {
+          var line = document.createElement('span');
+          line.className = 'line';
+          if (index + 1 === matchLine) {
+            line.className += ' hl';
+            hl = line;
+          }
+          line.textContent = lineText;
+          previewContentEl.appendChild(line);
+        });
+        if (hl) {
+          hl.scrollIntoView({ block: 'center' });
+        }
+      }
+
+      function select(index) {
+        if (index < 0 || index >= items.length) {
+          return;
+        }
+        selected = index;
+        renderResults();
+        var row = rowByIndex[index];
+        if (row) {
+          row.scrollIntoView({ block: 'nearest' });
+        }
+        var item = items[index];
+        send({ type: 'preview', path: item.path, line: item.line });
+      }
+
+      function openSelected() {
+        var item = items[selected];
+        if (item) {
+          send({ type: 'open', path: item.path, line: item.line });
+        }
+      }
+
+      // ---------------------------------------------------------------- input
+
+      queryEl.addEventListener('input', scheduleSearch);
+
+      queryEl.addEventListener('keydown', function (e) {
+        var key = e.key;
+        if (key === 'Tab' || (key === 'g' && e.ctrlKey)) {
+          e.preventDefault();
+          toggleMode();
+        } else if (key === 'r' && e.ctrlKey) {
+          e.preventDefault();
+          toggleGrepMode();
+        } else if (key === 'ArrowDown' || (key === 'j' && e.ctrlKey)) {
+          e.preventDefault();
+          // column-reverse: visually down = lower index (toward the prompt)
+          select(Math.max(selected - 1, 0));
+        } else if (key === 'ArrowUp' || (key === 'k' && e.ctrlKey)) {
+          e.preventDefault();
+          select(Math.min(selected + 1, items.length - 1));
+        } else if (key === 'Enter') {
+          e.preventDefault();
+          openSelected();
+        } else if (key === 'Escape') {
+          send({ type: 'close' });
+        }
+      });
+
+      // ---------------------------------------------------------------- host messages
+
+      if (bridge) {
+        bridge.addEventListener('message', function (e) {
+          var message = e.data;
+          if (!message) {
+            return;
+          }
+          if (message.type === 'results') {
+            items = message.items || [];
+            selected = items.length > 0 ? 0 : -1;
+            renderResults();
+            // Best match is the bottom row — scroll to it.
+            resultsEl.scrollTop = resultsEl.scrollHeight;
+            statusEl.textContent = items.length + ' results' +
+              (message.capped ? ' (capped)' : '') +
+              ' — ' + message.duration + 'ms';
+            if (selected >= 0) {
+              var item = items[selected];
+              send({ type: 'preview', path: item.path, line: item.line });
+            } else {
+              previewTitleEl.textContent = '';
+              previewContentEl.textContent = '';
+            }
+          } else if (message.type === 'preview') {
+            renderPreview(message);
+          } else if (message.type === 'status') {
+            statusEl.textContent = message.message || '';
+          } else if (message.type === 'reset') {
+            // The window is reused between popups — start clean, search only on typing.
+            queryEl.value = '';
+            items = [];
+            selected = -1;
+            renderResults();
+            previewTitleEl.textContent = '';
+            previewContentEl.textContent = '';
+            statusEl.textContent = 'type to search — Tab toggles Find Files / Live Grep, Ctrl+R cycles plain → regex → fuzzy';
+            queryEl.focus();
+          } else if (message.type === 'setMode') {
+            applyMode(message.mode);
+          } else if (message.type === 'setQuery') {
+            queryEl.value = message.query || '';
+            sendSearch();
+          }
+        });
+      }
+
+      if (!bridge) {
+        statusEl.textContent = 'WebView2 host bridge NOT available';
+      } else {
+        statusEl.textContent = 'type to search — Tab toggles Find Files / Live Grep, Ctrl+R cycles plain → regex → fuzzy';
+        // No initial search — the window opens clean and searches only once the user types.
+      }
+    })();
+  </script>
+</body>
+</html>
