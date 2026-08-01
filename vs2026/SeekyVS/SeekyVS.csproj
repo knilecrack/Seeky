@@ -28,10 +28,10 @@
     <PackageReference Include="Microsoft.VisualStudio.Extensibility.Sdk" Version="17.14.40608" PrivateAssets="all" />
     <PackageReference Include="Microsoft.VisualStudio.Extensibility.Build" Version="17.14.40608" PrivateAssets="all" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4078.44" />
-    <!-- Lifts the SDK's transitive MessagePack 2.5.198 (NU1902/NU1903 advisories) to the latest
-         patched 2.5.x. MessagePack.dll is suppressed from the VSIX anyway — the runtime copy
-         comes from VS's extension host — this only quiets the compile-time graph. -->
-    <PackageReference Include="MessagePack" Version="2.5.302" />
+    <!-- Lifts the SDK's transitive MessagePack 2.5.198 (NU1902/NU1903 advisories) to 3.x.
+         MessagePack.dll is suppressed from the VSIX — the runtime copy comes from VS's
+         extension host — so this only affects the compile-time graph. -->
+    <PackageReference Include="MessagePack" Version="3.1.8" />
   </ItemGroup>
 
   <!-- Remote UI XAML must be an embedded resource named <RootNamespace>.SeekyToolWindowContent.xaml -->
