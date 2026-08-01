@@ -160,16 +160,19 @@ same — these failures are all silent or cryptic without instrumentation.
 - `SeekyToolWindow.cs` / `SeekyToolWindowContent.cs` / `.xaml` — **dead-end Remote UI experiment,
   kept for documentation only** (see above).
 - `WebUI/index.html` — **Telescope-style search UI** (plain JS/CSS, no build step): prompt row
-  (`Find Files> ` / `Live Grep (fuzzy)> ` / `Git Modified> `) at the bottom, results left +
-  preview pane right (~50/50), status line above the prompt. Modes cycle with **Tab** or
-  **Ctrl+G**: files → grep → git. Other keys: **Ctrl+R** cycles grep sub-mode plain → regex →
-  **fuzzy** (default — fff's signature mode), **Ctrl+D** toggles a definitions-only filter on
-  grep results (matches fff's `classify_definitions` tagged with a `def` badge), **↑/↓** (and
-  **Ctrl+J/K**) move, **Enter** opens at the match line, **Esc** closes; search is debounced
-  150ms; selection drives the preview. Result rows carry git-status badges (`M`, `??`) from
-  fff; binary files show a "no preview" note instead of being read. All workspace text enters
-  the DOM via `textContent` only (never `innerHTML`) — same hard rule as the VS Code Seeky.
-  Keeps the `acquireVsCodeApi()` shim comment for the future `media/main.js` reuse.
+  (`Find Files> ` / `Live Grep (fuzzy)> ` / `Git Modified> ` / `Directories> `) at the bottom,
+  results left + preview pane right (~50/50), status line above the prompt. Modes cycle with
+  **Tab** or **Ctrl+G**: files → grep → git → dirs. Other keys: **Ctrl+R** cycles grep sub-mode
+  plain → regex → **fuzzy** (default — fff's signature mode), **Ctrl+D** toggles a
+  definitions-only filter on grep results (matches fff's `classify_definitions` tagged with a
+  `def` badge), **↑/↓** (and **Ctrl+J/K**) move — and **↑ in an empty prompt cycles past
+  queries** (fff's history LMDB, populated by frecency picks), **Enter** opens at the match
+  line (directories open in Windows Explorer), **Esc** closes; search is debounced 150ms;
+  selection drives the preview. Result rows carry git-status badges (`M`, `??`) from fff;
+  binary files show a "no preview" note instead of being read; directory previews list the
+  folder's entries. All workspace text enters the DOM via `textContent` only (never
+  `innerHTML`) — same hard rule as the VS Code Seeky. Keeps the `acquireVsCodeApi()` shim
+  comment for the future `media/main.js` reuse.
 - `global.json` pins .NET SDK 10.0.302 (stable; preview SDKs are installed on this machine).
 
 **Verified:** `dotnet build` from `vs2026/` succeeds with **0 warnings, 0 errors**, producing
@@ -228,6 +231,13 @@ fff's signature **fuzzy grep** mode plus frecency learning. `FffNativeClient` im
   cheap replacement for the abandoned Roslyn symbols mode.
 - **Binary guard**: items carry `is_binary`; binary files are never read for preview — the
   page shows a neutral note instead.
+- **Current-file deprioritization**: file/dir searches pass VS's active document as fff's
+  `current_file`, so the file you're already in ranks lower (alternate-file workflow).
+- **Query history**: `fff_get_historical_query` reads past queries from the history LMDB
+  (populated by `fff_track_query` picks); posted to the page on every show, cycled with ↑ in
+  an empty prompt.
+- **Directory search**: `fff_search_directories` powers the "Directories" mode; dir previews
+  list folder entries, and opening a directory reveals it in Windows Explorer.
 - **Match highlighting**: per-match `FffMatchRange` spans (`fff_grep_match_get_match_ranges_count`
   / `_get_match_range`) are read for grep results. They arrive as **byte offsets into the UTF-8
   line** and are converted in C# to UTF-16 char indices (re-encode the line with
@@ -244,7 +254,7 @@ Page → host:
 
 ```json
 { "type": "search",  "query": "foo", "mode": "grep", "grepMode": "fuzzy" }
-                                                    // mode: "files" | "grep" | "git"
+                                                    // mode: "files" | "grep" | "git" | "dirs"
                                                     // grepMode: "plain" | "regex" | "fuzzy"
 { "type": "preview", "path": "src/a.cs", "line": 42, "binary": false }
                                                     // line optional; binary=true asks the host
@@ -274,6 +284,8 @@ Host → page:
 { "type": "status",  "message": "indexing…" }       // status-line text: indexing, errors, etc.
 { "type": "setQuery", "query": "…" }                // honored by the page; not currently sent
 { "type": "setMode",  "mode": "files" }             // sent on show (Find Files / Live Grep commands)
+{ "type": "history",  "queries": ["foo", "bar"] }   // past queries, most recent first;
+                                                    // ↑ in an empty prompt cycles them
 ```
 
 Stale search responses are discarded with a generation counter (new keystroke wins).
