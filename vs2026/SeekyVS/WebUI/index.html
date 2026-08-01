@@ -151,7 +151,7 @@
                     { type: 'close' }
       host -> page: { type: 'results', items, done, capped, duration }
                     items: [{ name, path, line?, col?, text?, frecency?, ranges? }]
-                    (files: name=path; grep: +line/col/text; ranges = [start,end) char indices
+                    (files: name=path; grep: +line/col/text and ranges = [start,end) char indices
                     into text for .mhl span highlighting, grep only, may be [])
                     { type: 'preview', path, content, line? }
                     { type: 'status', message }
@@ -249,6 +249,9 @@
       }
 
       function toggleGrepMode() {
+        if (mode !== 'grep') {
+          return; // grep sub-modes only make sense in Live Grep
+        }
         grepMode = grepMode === 'plain' ? 'regex' : grepMode === 'regex' ? 'fuzzy' : 'plain';
         updatePromptLabel();
         sendSearch();

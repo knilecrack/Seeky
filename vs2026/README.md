@@ -118,6 +118,10 @@ same — these failures are all silent or cryptic without instrumentation.
    extension-relative paths at `typeof(...).Assembly.Location`. Related cleanup: the WebView2
    user-data folder is now `%LOCALAPPDATA%\SeekyVS\UserData` — the runtime creates its `EBWebView`
    data dir inside whatever UDF it gets, and it was polluting the folder next to the log file.
+6. **Roslyn/`MSBuildWorkspace` in the out-of-proc host: abandoned.** A symbols mode hit three
+   packaging failures in a row; the last was an MSBuild `TypeInitializationException` inside
+   Roslyn's BuildHost — our compile-time Microsoft.Build 17.14 vs the locator-registered VS 2026
+   MSBuild 18.x. Not worth fighting; fff's `classify_definitions` is the cheap alternative.
 
 ## What was built and verified
 
@@ -128,8 +132,10 @@ same — these failures are all silent or cryptic without instrumentation.
   `Microsoft.Web.WebView2` **1.0.4078.44** (only the Core assembly is used; the Wpf/WinForms
   DLLs ship inertly in the VSIX and are never loaded).
 - `SeekyVSExtension.cs` — extension entrypoint; metadata id `SeekyVS.3f6b2d8a-…`, display name "Seeky".
-- `SeekyToolWindowCommand.cs` — "Seeky: Open Search" (Tools menu) →
-  `SeekyModalWindowManager.ShowAsync(Extensibility, context)`.
+- `SeekyFindFilesCommand.cs` / `SeekyLiveGrepCommand.cs` — "Seeky: Find Files" / "Seeky: Live
+  Grep" (Ctrl+Shift+G), Tools menu → `SeekyModalWindowManager.ShowAsync(Extensibility, context,
+  mode)`. (The original `SeekyToolWindowCommand` opened the dead-end Remote UI tool window; see
+  git history.)
 - `SeekyModalWindowManager.cs` — the whole modal window: dedicated STA thread with a Win32 message
   loop + work queue + minimal `SynchronizationContext`; `RegisterClassEx`/`CreateWindowEx` window;
   WebView2 Core controller on the HWND (env, bounds on `WM_SIZE`, virtual host mapping anchored at
@@ -433,8 +439,17 @@ screen.
 
 Done: extension shell, command, modal window, WebView2 hosting, two-way messaging — verified on
 VS 2026 Insiders. Built since (pending F5 verification): native fff-c backend (LibraryImport FFI,
-fuzzy files + plain/regex/fuzzy grep, frecency tracking, wait-for-scan warmup) and
-Telescope-style UI (find files / live grep, preview pane, open-in-VS at the match line).
+fuzzy files + plain/regex/fuzzy grep, frecency tracking, wait-for-scan warmup), Telescope-style
+UI (find files / live grep, preview pane, open-in-VS at the match line), match highlighting from
+fff match ranges, and settings-file font configuration.
+
+**Attempted and abandoned:** a Roslyn/`MSBuildWorkspace` C# workspace-symbols mode (three
+packaging-related runtime failures in a row, the last being an MSBuild
+`TypeInitializationException` in Roslyn's BuildHost — a version clash between our compile-time
+Microsoft.Build 17.14 and the locator-registered VS 2026 MSBuild 18.x in the out-of-proc host).
+Cost-benefit says no; if a symbols mode is ever revisited, fff's own
+`classify_definitions` grep flag is the far cheaper route (no Roslyn, no MSBuild).
+
 Remaining, in rough order:
 
 1. **F5-verify the fff-c + Telescope-UI stack** (steps in "How to run"; fuzzy grep demo: `shwcr`
@@ -443,9 +458,8 @@ Remaining, in rough order:
    the VSIX and add the `acquireVsCodeApi()` shim described in `index.html`, replacing the
    spike UI.
 3. **Theme bridging** (open question 1) — push VS theme colors into the page as CSS variables.
-4. **Keybinding for the command** (e.g. Ctrl+T-style chord) via the command configuration.
-5. Add modes (recent/buffers/symbols/git-modified — fff exposes more primitives worth binding,
+4. Add modes (recent/buffers/git-modified — fff exposes more primitives worth binding,
    e.g. `fff_glob`, `fff_multi_grep`, directory search).
-6. Live preview via the VS editor instead of raw file reads; honor `.gitignore`-style excludes
+5. Live preview via the VS editor instead of raw file reads; honor `.gitignore`-style excludes
    consistently with the VS Code Seeky.
-7. Delete the dead-end Remote UI tool window classes (kept for now as documentation).
+6. Delete the dead-end Remote UI tool window classes (kept for now as documentation).

@@ -35,9 +35,10 @@ internal sealed partial class FffNativeClient : IDisposable
 
     private static bool resolverInstalled;
 
-    private readonly object gate = new();
+    private readonly System.Threading.Lock gate = new();
     private IntPtr handle;
     private string? workspaceDir;
+    private bool scanWaitCompleted;
 
     /// <summary>Grep sub-mode for <c>fff_live_grep</c> (0 = plain SIMD, 1 = regex, 2 = fuzzy).</summary>
     internal enum GrepMode : byte
@@ -68,12 +69,14 @@ internal sealed partial class FffNativeClient : IDisposable
     /// </summary>
     public Task StartAsync(string dir, Action<string>? reportStatus, CancellationToken cancellationToken)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(dir);
+
         return Task.Run(
             () =>
             {
-                lock (this.gate)
+                lock (gate)
                 {
-                    this.EnsureInstanceCore(dir, reportStatus);
+                    EnsureInstanceCore(dir, reportStatus, cancellationToken);
                 }
             },
             cancellationToken);
@@ -82,12 +85,17 @@ internal sealed partial class FffNativeClient : IDisposable
     /// <summary>Fuzzy file search; returns workspace-relative paths with frecency scores.</summary>
     public Task<IReadOnlyList<FileItem>> FindFilesAsync(string query, int maxResults, CancellationToken cancellationToken)
     {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxResults);
+
         return Task.Run<IReadOnlyList<FileItem>>(
             () =>
             {
-                lock (this.gate)
+                lock (gate)
                 {
-                    IntPtr result = Native.fff_search(this.handle, query, null, 0, 0, (uint)maxResults, 0, 0);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    ThrowIfNotStartedCore();
+
+                    IntPtr result = Native.fff_search(handle, query, null, 0, 0, (uint)maxResults, 0, 0);
                     IntPtr payload = UnwrapResult(result, "search");
                     try
                     {
@@ -123,13 +131,18 @@ internal sealed partial class FffNativeClient : IDisposable
     /// <c>*.cs pattern</c>-style constraints itself).</summary>
     public Task<GrepResult> GrepAsync(string query, GrepMode mode, int maxResults, CancellationToken cancellationToken)
     {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxResults);
+
         return Task.Run(
             () =>
             {
-                lock (this.gate)
+                lock (gate)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    ThrowIfNotStartedCore();
+
                     IntPtr result = Native.fff_live_grep(
-                        this.handle,
+                        handle,
                         query,
                         (byte)mode,
                         maxFileSize: 0,
@@ -197,14 +210,14 @@ internal sealed partial class FffNativeClient : IDisposable
             {
                 try
                 {
-                    lock (this.gate)
+                    lock (gate)
                     {
-                        if (this.handle == IntPtr.Zero)
+                        if (handle == IntPtr.Zero)
                         {
                             return;
                         }
 
-                        IntPtr result = Native.fff_track_query(this.handle, query, relativePath);
+                        IntPtr result = Native.fff_track_query(handle, query, relativePath);
                         _ = UnwrapResult(result, "track_query", out long ok);
                         SeekyLog.Info($"fff track_query('{query}', '{relativePath}'): {(ok == 1 ? "ok" : "failed")}");
                     }
@@ -220,38 +233,46 @@ internal sealed partial class FffNativeClient : IDisposable
     /// <inheritdoc />
     public void Dispose()
     {
-        lock (this.gate)
+        lock (gate)
         {
-            if (this.handle != IntPtr.Zero)
+            if (handle != IntPtr.Zero)
             {
                 SeekyLog.Info("fff: destroying instance");
-                Native.fff_destroy(this.handle);
-                this.handle = IntPtr.Zero;
-                this.workspaceDir = null;
+                Native.fff_destroy(handle);
+                handle = IntPtr.Zero;
+                workspaceDir = null;
+                scanWaitCompleted = false;
             }
         }
     }
 
     // ------------------------------------------------------------------ instance lifecycle
 
-    private void EnsureInstanceCore(string dir, Action<string>? reportStatus)
+    private void EnsureInstanceCore(
+        string dir,
+        Action<string>? reportStatus,
+        CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         EnsureResolver();
 
-        if (this.handle != IntPtr.Zero && string.Equals(this.workspaceDir, dir, StringComparison.OrdinalIgnoreCase))
+        bool sameWorkspace = handle != IntPtr.Zero
+            && string.Equals(workspaceDir, dir, StringComparison.OrdinalIgnoreCase);
+        if (sameWorkspace && scanWaitCompleted)
         {
             return;
         }
 
-        if (this.handle != IntPtr.Zero)
+        if (handle != IntPtr.Zero && !sameWorkspace)
         {
-            SeekyLog.Info($"fff: restarting index for '{dir}' (was '{this.workspaceDir}')");
+            SeekyLog.Info($"fff: restarting index for '{dir}' (was '{workspaceDir}')");
             reportStatus?.Invoke("reindexing…");
-            IntPtr restartResult = Native.fff_restart_index(this.handle, dir);
+            IntPtr restartResult = Native.fff_restart_index(handle, dir);
             UnwrapResult(restartResult, "restart_index");
-            this.workspaceDir = dir;
+            workspaceDir = dir;
+            scanWaitCompleted = false;
         }
-        else
+        else if (handle == IntPtr.Zero)
         {
             string extensionDir = Path.GetDirectoryName(typeof(FffNativeClient).Assembly.Location)
                 ?? AppContext.BaseDirectory;
@@ -287,13 +308,14 @@ internal sealed partial class FffNativeClient : IDisposable
                 };
                 SeekyLog.Info($"fff: creating instance for '{dir}' (dll '{extensionDir}\\Tools\\fff_c.dll')");
                 IntPtr result = Native.fff_create_instance_with(in options);
-                this.handle = UnwrapResult(result, "create_instance_with");
-                if (this.handle == IntPtr.Zero)
+                handle = UnwrapResult(result, "create_instance_with");
+                if (handle == IntPtr.Zero)
                 {
                     throw new InvalidOperationException("fff create_instance_with returned a null handle");
                 }
 
-                this.workspaceDir = dir;
+                workspaceDir = dir;
+                scanWaitCompleted = false;
                 SeekyLog.Info("fff: instance created");
             }
             finally
@@ -310,8 +332,9 @@ internal sealed partial class FffNativeClient : IDisposable
         var waitStart = Stopwatch.StartNew();
         while (true)
         {
-            reportStatus?.Invoke($"indexing… {this.GetScannedFileCount()} files");
-            IntPtr waitResult = Native.fff_wait_for_scan(this.handle, 500);
+            cancellationToken.ThrowIfCancellationRequested();
+            reportStatus?.Invoke($"indexing… {GetScannedFileCount()} files");
+            IntPtr waitResult = Native.fff_wait_for_scan(handle, 500);
             _ = UnwrapResult(waitResult, "wait_for_scan", out long completed);
             if (completed == 1)
             {
@@ -325,13 +348,22 @@ internal sealed partial class FffNativeClient : IDisposable
             }
         }
 
-        reportStatus?.Invoke($"index ready — {this.GetScannedFileCount()} files");
-        SeekyLog.Info($"fff: scan complete in {waitStart.ElapsedMilliseconds}ms ({this.GetScannedFileCount()} files)");
+        scanWaitCompleted = true;
+        reportStatus?.Invoke($"index ready — {GetScannedFileCount()} files");
+        SeekyLog.Info($"fff: scan complete in {waitStart.ElapsedMilliseconds}ms ({GetScannedFileCount()} files)");
+    }
+
+    private void ThrowIfNotStartedCore()
+    {
+        if (handle == IntPtr.Zero)
+        {
+            throw new InvalidOperationException("The fff search instance has not been started.");
+        }
     }
 
     private ulong GetScannedFileCount()
     {
-        IntPtr result = Native.fff_get_scan_progress(this.handle);
+        IntPtr result = Native.fff_get_scan_progress(handle);
         IntPtr payload = UnwrapResult(result, "get_scan_progress");
         try
         {
