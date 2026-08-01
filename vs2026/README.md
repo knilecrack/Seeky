@@ -160,13 +160,16 @@ same — these failures are all silent or cryptic without instrumentation.
 - `SeekyToolWindow.cs` / `SeekyToolWindowContent.cs` / `.xaml` — **dead-end Remote UI experiment,
   kept for documentation only** (see above).
 - `WebUI/index.html` — **Telescope-style search UI** (plain JS/CSS, no build step): prompt row
-  (`Find Files> ` / `Live Grep (fuzzy)> `) at top, results left + preview pane right (~50/50),
-  status line at bottom. Keys: **Tab** or **Ctrl+G** toggles files/grep, **Ctrl+R** cycles grep
-  sub-mode plain → regex → **fuzzy** (default — fff's signature mode), **↑/↓** (and **Ctrl+J/K**)
-  move, **Enter** opens at the match line, **Esc** closes; search is debounced 150ms; selection
-  drives the preview. All workspace text enters the DOM via `textContent` only (never
-  `innerHTML`) — same hard rule as the VS Code Seeky. Keeps the `acquireVsCodeApi()` shim comment
-  for the future `media/main.js` reuse.
+  (`Find Files> ` / `Live Grep (fuzzy)> ` / `Git Modified> `) at the bottom, results left +
+  preview pane right (~50/50), status line above the prompt. Modes cycle with **Tab** or
+  **Ctrl+G**: files → grep → git. Other keys: **Ctrl+R** cycles grep sub-mode plain → regex →
+  **fuzzy** (default — fff's signature mode), **Ctrl+D** toggles a definitions-only filter on
+  grep results (matches fff's `classify_definitions` tagged with a `def` badge), **↑/↓** (and
+  **Ctrl+J/K**) move, **Enter** opens at the match line, **Esc** closes; search is debounced
+  150ms; selection drives the preview. Result rows carry git-status badges (`M`, `??`) from
+  fff; binary files show a "no preview" note instead of being read. All workspace text enters
+  the DOM via `textContent` only (never `innerHTML`) — same hard rule as the VS Code Seeky.
+  Keeps the `acquireVsCodeApi()` shim comment for the future `media/main.js` reuse.
 - `global.json` pins .NET SDK 10.0.302 (stable; preview SDKs are installed on this machine).
 
 **Verified:** `dotnet build` from `vs2026/` succeeds with **0 warnings, 0 errors**, producing
@@ -216,6 +219,15 @@ fff's signature **fuzzy grep** mode plus frecency learning. `FffNativeClient` im
   **0 = plain (true literal SIMD), 1 = regex, 2 = fuzzy** — the query is passed raw; fff parses
   `*.cs pattern`-style constraints itself. (The MCP build needed manual regex-escaping for plain
   mode; native mode 0 made that code unnecessary and it was deleted.)
+- **Git integration**: file/grep items carry fff's `git_status` (rendered as row badges);
+  `fff_refresh_git_status` runs on every popup show. "Git Modified" mode lists/searches only
+  files with a non-empty status — the normal fuzzy search filtered client-side, with an
+  `fff_glob '*'` fallback for the empty query (all modified files, ranked by frecency).
+- **Definitions**: `fff_live_grep` runs with `classify_definitions=true`; matches tagged
+  `is_definition` get a `def` badge and the page's **Ctrl+D** definitions-only filter — the
+  cheap replacement for the abandoned Roslyn symbols mode.
+- **Binary guard**: items carry `is_binary`; binary files are never read for preview — the
+  page shows a neutral note instead.
 - **Match highlighting**: per-match `FffMatchRange` spans (`fff_grep_match_get_match_ranges_count`
   / `_get_match_range`) are read for grep results. They arrive as **byte offsets into the UTF-8
   line** and are converted in C# to UTF-16 char indices (re-encode the line with
@@ -232,9 +244,11 @@ Page → host:
 
 ```json
 { "type": "search",  "query": "foo", "mode": "grep", "grepMode": "fuzzy" }
-                                                    // mode: "files" | "grep"
+                                                    // mode: "files" | "grep" | "git"
                                                     // grepMode: "plain" | "regex" | "fuzzy"
-{ "type": "preview", "path": "src/a.cs", "line": 42 }          // line optional
+{ "type": "preview", "path": "src/a.cs", "line": 42, "binary": false }
+                                                    // line optional; binary=true asks the host
+                                                    // to skip reading the file
 { "type": "open",    "path": "src/a.cs", "line": 42 }          // line optional
 { "type": "close" }
 ```
@@ -244,14 +258,19 @@ Host → page:
 ```json
 { "type": "results", "items": [ { "name": "…", "path": "src/a.cs", "line": 42, "col": 7,
                                   "text": "…", "frecency": 3,
+                                  "gitStatus": "M ", "isBinary": false,
+                                  "isDefinition": true,
                                   "ranges": [[4, 9], [12, 16]] } ],
   "done": true, "capped": false, "duration": 12 }
-                                                    // files mode: name=path, frecency only;
-                                                    // grep mode: +line/col/text and `ranges`:
-                                                    // [start,end) UTF-16 char indices into `text`
-                                                    // for match highlighting (may be [])
+                                                    // files/git mode: name=path, frecency,
+                                                    //   gitStatus, isBinary
+                                                    // grep mode: +line/col/text, isDefinition,
+                                                    //   and `ranges`: [start,end) UTF-16 char
+                                                    //   indices into `text` (may be [])
 { "type": "preview", "path": "src/a.cs", "content": "…file text (capped 200KB/2000 lines)…",
   "line": 42 }                                      // line optional (null for files mode)
+{ "type": "preview", "path": "src/a.dll", "binary": true }
+                                                    // binary files: no content, page shows a note
 { "type": "status",  "message": "indexing…" }       // status-line text: indexing, errors, etc.
 { "type": "setQuery", "query": "…" }                // honored by the page; not currently sent
 { "type": "setMode",  "mode": "files" }             // sent on show (Find Files / Live Grep commands)

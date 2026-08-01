@@ -84,13 +84,13 @@ internal static class SeekyModalWindowManager
     /// </summary>
     /// <param name="extensibility">The extensibility object (for workspaces/documents APIs).</param>
     /// <param name="clientContext">The command's client context (fallback workspace source).</param>
-    /// <param name="mode">Picker mode the page should start in: "files" or "grep".</param>
+    /// <param name="mode">Picker mode the page should start in: "files", "grep", or "git".</param>
     /// <returns>A task completing when the show request has been processed on the UI thread.</returns>
     public static Task ShowAsync(VisualStudioExtensibility extensibility, IClientContext clientContext, string mode)
     {
         SeekyModalWindowManager.extensibility = extensibility;
         lastClientContext = clientContext;
-        requestedMode = mode is "files" or "grep" ? mode : "files";
+        requestedMode = mode is "files" or "grep" or "git" ? mode : "files";
         EnsureUiThread();
         SeekyLog.Info($"ShowAsync (mode={requestedMode}): enqueueing ShowCore on UI thread");
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -362,9 +362,10 @@ internal static class SeekyModalWindowManager
                     {
                         string? path = GetString(doc.RootElement, "path");
                         int? line = GetInt(doc.RootElement, "line");
+                        bool isBinary = GetBool(doc.RootElement, "binary");
                         if (path is not null)
                         {
-                            HandlePreviewAsync(path, line).Forget();
+                            HandlePreviewAsync(path, line, isBinary).Forget();
                         }
 
                         break;
@@ -410,6 +411,10 @@ internal static class SeekyModalWindowManager
         element.TryGetProperty(property, out JsonElement value) && value.TryGetInt32(out int number)
             ? number
             : null;
+
+    private static bool GetBool(JsonElement element, string property) =>
+        element.TryGetProperty(property, out JsonElement value)
+        && value.ValueKind == JsonValueKind.True;
 
     private static void PostJson(object message) =>
         coreWebView?.PostWebMessageAsJson(JsonSerializer.Serialize(message));
@@ -498,6 +503,9 @@ internal static class SeekyModalWindowManager
             SeekyLog.Info($"Workspace: resolved '{resolved ?? "(none)"}' (was '{workspaceDir ?? "(none)"}')");
             if (string.Equals(resolved, workspaceDir, StringComparison.OrdinalIgnoreCase))
             {
+                // Same workspace — still refresh git status so badges/Git Modified reflect
+                // changes made since the last popup (best-effort, background).
+                FffClient.RefreshGitStatusAsync(CancellationToken.None).Forget();
                 return;
             }
 
@@ -511,6 +519,7 @@ internal static class SeekyModalWindowManager
 
             SeekyLog.Info($"Workspace: changed to '{resolved}' — restarting the fff index");
             await FffClient.StartAsync(resolved, PostStatus, CancellationToken.None);
+            FffClient.RefreshGitStatusAsync(CancellationToken.None).Forget();
         }
         catch (Exception ex)
         {
@@ -637,15 +646,44 @@ internal static class SeekyModalWindowManager
                             text = m.Text,
                             // (start, end) UTF-16 char-index pairs into 'text' for highlighting.
                             ranges = m.Ranges.Select(r => new[] { r.Start, r.End }).ToArray(),
+                            gitStatus = m.GitStatus,
+                            isBinary = m.IsBinary,
+                            isDefinition = m.IsDefinition,
                         })
                         .ToList();
                 }
+            }
+            else if (mode == "git")
+            {
+                // "Git Modified": fuzzy file search filtered to files with a git status
+                // (empty query → all modified files, frecency-ranked — see FffNativeClient).
+                IReadOnlyList<FffNativeClient.FileItem> files =
+                    await FffClient.GitModifiedAsync(query, maxResults, CancellationToken.None);
+                items = files
+                    .Select(f => (object)new
+                    {
+                        name = f.Path,
+                        path = f.Path,
+                        frecency = f.FrecencyScore,
+                        gitStatus = f.GitStatus,
+                        isBinary = f.IsBinary,
+                    })
+                    .ToList();
             }
             else
             {
                 IReadOnlyList<FffNativeClient.FileItem> files =
                     await FffClient.FindFilesAsync(query, maxResults, CancellationToken.None);
-                items = files.Select(f => (object)new { name = f.Path, path = f.Path, frecency = f.FrecencyScore }).ToList();
+                items = files
+                    .Select(f => (object)new
+                    {
+                        name = f.Path,
+                        path = f.Path,
+                        frecency = f.FrecencyScore,
+                        gitStatus = f.GitStatus,
+                        isBinary = f.IsBinary,
+                    })
+                    .ToList();
             }
 
             if (generation != searchGeneration)
@@ -671,12 +709,19 @@ internal static class SeekyModalWindowManager
         }
     }
 
-    private static async Task HandlePreviewAsync(string path, int? line)
+    private static async Task HandlePreviewAsync(string path, int? line, bool isBinary)
     {
         try
         {
             if (workspaceDir is null)
             {
+                return;
+            }
+
+            // Never read binary files — the page shows a neutral note instead.
+            if (isBinary)
+            {
+                PostJson(new { type = "preview", path, binary = true });
                 return;
             }
 

@@ -112,6 +112,28 @@
       color: var(--bg);
       border-radius: 2px;
     }
+    /* Git status badge: amber M = modified, green ?? = untracked/added, dim = other */
+    .git-badge {
+      display: inline-block;
+      min-width: 2ch;
+      margin-right: 6px;
+      padding: 0 3px;
+      border-radius: 3px;
+      font-size: 11px;
+      text-align: center;
+    }
+    .git-badge.m { color: #e5c07b; background: rgba(229, 192, 123, .12); }
+    .git-badge.ut { color: #98c379; background: rgba(152, 195, 121, .12); }
+    .git-badge.dim { color: var(--fg-dim); background: rgba(128, 128, 128, .12); }
+    /* Definition badge (grep rows whose match fff classified as a code definition) */
+    .def-badge {
+      margin-right: 6px;
+      padding: 0 3px;
+      border: 1px solid var(--accent);
+      border-radius: 3px;
+      font-size: 10px;
+      color: var(--accent);
+    }
     /* Status line at the bottom — result count / indexing / errors */
     #status {
       padding: 4px 10px;
@@ -191,12 +213,15 @@
       var previewContentEl = document.getElementById('preview-content');
       var statusEl = document.getElementById('status');
 
-      var mode = 'files'; // 'files' | 'grep'
+      var mode = 'files'; // 'files' | 'grep' | 'git'
       var grepMode = 'fuzzy'; // 'plain' | 'regex' | 'fuzzy' (fuzzy is fff's signature mode)
+      var defsOnly = false;   // Ctrl+D: grep rows filtered to definitions (resets per search)
       var items = [];
       var rowByIndex = []; // item index -> DOM row (group headers shift positions)
       var selected = -1;
       var debounceTimer = null;
+      var lastCapped = false;
+      var lastDuration = 0;
 
       function send(message) {
         if (bridge) {
@@ -215,7 +240,7 @@
           renderResults();
           previewTitleEl.textContent = '';
           previewContentEl.textContent = '';
-          statusEl.textContent = 'type to search — Tab toggles Find Files / Live Grep, Ctrl+R cycles plain → regex → fuzzy';
+          statusEl.textContent = 'type to search — Tab cycles Files/Grep/Git · Ctrl+R grep mode · Ctrl+D defs only';
           return;
         }
         send({ type: 'search', query: query, mode: mode, grepMode: grepMode });
@@ -227,11 +252,15 @@
       }
 
       function updatePromptLabel() {
-        modeLabelEl.textContent = mode === 'files' ? 'Find Files' : 'Live Grep (' + grepMode + ')';
+        modeLabelEl.textContent = mode === 'files'
+          ? 'Find Files'
+          : mode === 'git'
+            ? 'Git Modified'
+            : 'Live Grep (' + grepMode + ')';
       }
 
       function toggleMode() {
-        mode = mode === 'files' ? 'grep' : 'files';
+        mode = mode === 'files' ? 'grep' : mode === 'grep' ? 'git' : 'files';
         updatePromptLabel();
         sendSearch();
       }
@@ -241,7 +270,7 @@
       // every show, so the page is already in a clean state, and if 'setMode' races ahead
       // of 'reset' it must not clobber an in-flight typed query.
       function applyMode(newMode) {
-        if (newMode !== 'files' && newMode !== 'grep') {
+        if (newMode !== 'files' && newMode !== 'grep' && newMode !== 'git') {
           return;
         }
         mode = newMode;
@@ -255,6 +284,35 @@
         grepMode = grepMode === 'plain' ? 'regex' : grepMode === 'regex' ? 'fuzzy' : 'plain';
         updatePromptLabel();
         sendSearch();
+      }
+
+      // Ctrl+D: filter grep rows to definitions only (page-side; resets on each new search).
+      function toggleDefsOnly() {
+        if (mode !== 'grep') {
+          return;
+        }
+        defsOnly = !defsOnly;
+        renderResults();
+        updateResultStatus();
+      }
+
+      // Indices into items[] visible under the current defsOnly filter.
+      function visibleIndices() {
+        var out = [];
+        for (var i = 0; i < items.length; i++) {
+          if (!defsOnly || mode !== 'grep' || items[i].isDefinition) {
+            out.push(i);
+          }
+        }
+        return out;
+      }
+
+      function updateResultStatus() {
+        var count = visibleIndices().length;
+        statusEl.textContent = count + ' results' +
+          (lastCapped ? ' (capped)' : '') +
+          (defsOnly && mode === 'grep' ? ' (defs only)' : '') +
+          ' — ' + lastDuration + 'ms';
       }
 
       // ---------------------------------------------------------------- rendering
@@ -288,13 +346,36 @@
         }
       }
 
+      // Small git-status badge for result rows (amber M = modified, green ?? = untracked,
+      // dim everything else). Full status goes on the title. Returns null when clean.
+      function gitBadge(status) {
+        if (!status) {
+          return null;
+        }
+        var s = String(status).toLowerCase();
+        var cls = 'dim';
+        var text = status.length <= 3 ? status : status.slice(0, 2);
+        if (s.indexOf('untrack') >= 0 || s === '??') { cls = 'ut'; text = '??'; }
+        else if (s.indexOf('mod') >= 0) { cls = 'm'; text = 'M'; }
+        else if (s.indexOf('add') >= 0) { cls = 'ut'; text = 'A'; }
+        else if (s.indexOf('del') >= 0) { cls = 'm'; text = 'D'; }
+        else if (s.indexOf('ren') >= 0) { cls = 'dim'; text = 'R'; }
+        var badge = document.createElement('span');
+        badge.className = 'git-badge ' + cls;
+        badge.textContent = text;
+        badge.title = status;
+        return badge;
+      }
+
       function renderResults() {
         resultsEl.textContent = '';
         rowByIndex = [];
         // Emit worst-first so the best match (index 0) is the bottom row, next to the prompt.
         // In grep mode, group matches under a header row per file.
+        var indices = visibleIndices();
         var lastGroupPath = null;
-        for (var index = items.length - 1; index >= 0; index--) {
+        for (var n = indices.length - 1; n >= 0; n--) {
+          var index = indices[n];
           var item = items[index];
           if (mode === 'grep' && item.path !== lastGroupPath) {
             lastGroupPath = item.path;
@@ -308,7 +389,17 @@
           }
           var row = document.createElement('div');
           row.className = 'row' + (mode === 'grep' ? ' match' : '') + (index === selected ? ' selected' : '');
+          var badge = gitBadge(item.gitStatus);
+          if (badge) {
+            row.appendChild(badge);
+          }
           if (mode === 'grep') {
+            if (item.isDefinition) {
+              var defBadge = document.createElement('span');
+              defBadge.className = 'def-badge';
+              defBadge.textContent = 'def';
+              row.appendChild(defBadge);
+            }
             var loc = document.createElement('span');
             loc.className = 'dim';
             loc.textContent = item.line + ': ';
@@ -317,7 +408,7 @@
             appendHighlightedSegments(text, item.text || '', item.ranges);
             row.appendChild(text);
           } else {
-            row.textContent = item.path;
+            row.appendChild(document.createTextNode(item.path));
           }
           (function (i) {
             row.addEventListener('click', function () { select(i); });
@@ -331,6 +422,11 @@
       function renderPreview(message) {
         previewTitleEl.textContent = message.path || '';
         previewContentEl.textContent = '';
+        // Binary files are never read — the host posts { binary: true } instead of content.
+        if (message.binary) {
+          previewContentEl.textContent = 'binary file — no preview';
+          return;
+        }
         var matchLine = message.line || 0;
         var hl = null;
         (message.content || '').split('\n').forEach(function (lineText, index) {
@@ -355,6 +451,20 @@
         }
       }
 
+      // Sends a preview request for an item — except binary files, which render a neutral
+      // note locally (the host also guards against reading them).
+      function requestPreview(item) {
+        if (!item) {
+          return;
+        }
+        if (item.isBinary) {
+          previewTitleEl.textContent = item.path || '';
+          previewContentEl.textContent = 'binary file — no preview';
+          return;
+        }
+        send({ type: 'preview', path: item.path, line: item.line, binary: item.isBinary === true });
+      }
+
       function select(index) {
         if (index < 0 || index >= items.length) {
           return;
@@ -365,8 +475,7 @@
         if (row) {
           row.scrollIntoView({ block: 'nearest' });
         }
-        var item = items[index];
-        send({ type: 'preview', path: item.path, line: item.line });
+        requestPreview(items[index]);
       }
 
       function openSelected() {
@@ -388,6 +497,9 @@
         } else if (key === 'r' && e.ctrlKey) {
           e.preventDefault();
           toggleGrepMode();
+        } else if (key === 'd' && e.ctrlKey) {
+          e.preventDefault();
+          toggleDefsOnly();
         } else if (key === 'ArrowDown' || (key === 'j' && e.ctrlKey)) {
           e.preventDefault();
           // column-reverse: visually down = lower index (toward the prompt)
@@ -413,16 +525,16 @@
           }
           if (message.type === 'results') {
             items = message.items || [];
+            defsOnly = false; // defs filter resets per search
+            lastCapped = !!message.capped;
+            lastDuration = message.duration || 0;
             selected = items.length > 0 ? 0 : -1;
             renderResults();
             // Best match is the bottom row — scroll to it.
             resultsEl.scrollTop = resultsEl.scrollHeight;
-            statusEl.textContent = items.length + ' results' +
-              (message.capped ? ' (capped)' : '') +
-              ' — ' + message.duration + 'ms';
+            updateResultStatus();
             if (selected >= 0) {
-              var item = items[selected];
-              send({ type: 'preview', path: item.path, line: item.line });
+              requestPreview(items[selected]);
             } else {
               previewTitleEl.textContent = '';
               previewContentEl.textContent = '';
@@ -435,11 +547,12 @@
             // The window is reused between popups — start clean, search only on typing.
             queryEl.value = '';
             items = [];
+            defsOnly = false;
             selected = -1;
             renderResults();
             previewTitleEl.textContent = '';
             previewContentEl.textContent = '';
-            statusEl.textContent = 'type to search — Tab toggles Find Files / Live Grep, Ctrl+R cycles plain → regex → fuzzy';
+            statusEl.textContent = 'type to search — Tab cycles Files/Grep/Git · Ctrl+R grep mode · Ctrl+D defs only';
             queryEl.focus();
           } else if (message.type === 'setMode') {
             applyMode(message.mode);
@@ -458,7 +571,7 @@
       if (!bridge) {
         statusEl.textContent = 'WebView2 host bridge NOT available';
       } else {
-        statusEl.textContent = 'type to search — Tab toggles Find Files / Live Grep, Ctrl+R cycles plain → regex → fuzzy';
+        statusEl.textContent = 'type to search — Tab cycles Files/Grep/Git · Ctrl+R grep mode · Ctrl+D defs only';
         // No initial search — the window opens clean and searches only once the user types.
       }
     })();
