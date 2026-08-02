@@ -124,7 +124,10 @@ internal sealed partial class FffNativeClient : IDisposable
                     IntPtr payload = UnwrapResult(result, "search_directories");
                     try
                     {
-                        uint count = Native.fff_dir_search_result_get_count(payload);
+                        // v0.10.1 has no fff_dir_search_result_get_count export (it exists only
+                        // on main) — read the count from the result struct header instead.
+                        FffDirSearchResultHeader header = Marshal.PtrToStructure<FffDirSearchResultHeader>(payload);
+                        uint count = header.Count;
                         var items = new List<DirItem>((int)count);
                         for (uint i = 0; i < count; i++)
                         {
@@ -727,9 +730,6 @@ internal sealed partial class FffNativeClient : IDisposable
         internal static partial IntPtr fff_dir_search_result_get_item(IntPtr result, uint index);
 
         [LibraryImport(LibraryName)]
-        internal static partial uint fff_dir_search_result_get_count(IntPtr result);
-
-        [LibraryImport(LibraryName)]
         internal static partial void fff_free_dir_search_result(IntPtr result);
 
         [LibraryImport(LibraryName)]
@@ -889,5 +889,17 @@ internal sealed partial class FffNativeClient : IDisposable
         internal IntPtr RelativePath;
         internal IntPtr DirName;
         internal int MaxAccessFrecency;
+    }
+
+    // Blittable mirror of the FffDirSearchResult header — v0.10.1 exports no count accessor,
+    // so the count is read from the struct (layout matches the tagged v0.10.1 fff.h).
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FffDirSearchResultHeader
+    {
+        internal IntPtr Items;
+        internal IntPtr Scores;
+        internal uint Count;
+        internal uint TotalMatched;
+        internal uint TotalDirs;
     }
 }
