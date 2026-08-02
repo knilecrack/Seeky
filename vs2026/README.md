@@ -170,9 +170,10 @@ same — these failures are all silent or cryptic without instrumentation.
 - `SeekyToolWindow.cs` / `SeekyToolWindowContent.cs` / `.xaml` — **dead-end Remote UI experiment,
   kept for documentation only** (see above).
 - `WebUI/index.html` — **Telescope-style search UI** (plain JS/CSS, no build step): prompt row
-  (`Find Files> ` / `Live Grep (fuzzy)> ` / `Git Modified> ` / `Directories> `) at the bottom,
+  (`Find Files> ` / `Live Grep (fuzzy)> ` / `Git Modified> `) at the bottom,
   results left + preview pane right (~50/50), status line above the prompt. Modes cycle with
-  **Tab** or **Ctrl+G**: files → grep → git → dirs. Other keys: **Ctrl+R** cycles grep sub-mode
+  **Tab** or **Ctrl+G**: files → grep → git. (A fourth "Directories" mode exists in the backend
+  but is hidden from the cycle for now.) Other keys: **Ctrl+R** cycles grep sub-mode
   plain → regex → **fuzzy** (default — fff's signature mode), **Ctrl+D** toggles a
   definitions-only filter on grep results (matches fff's `classify_definitions` tagged with a
   `def` badge), **↑/↓** (and **Ctrl+J/K**) move — and **↑ in an empty prompt cycles past

@@ -270,7 +270,8 @@
       }
 
       function toggleMode() {
-        mode = mode === 'files' ? 'grep' : mode === 'grep' ? 'git' : mode === 'git' ? 'dirs' : 'files';
+        // NOTE: 'dirs' mode is hidden for now (backend support kept) — cycle is files/grep/git.
+        mode = mode === 'files' ? 'grep' : mode === 'grep' ? 'git' : 'files';
         updatePromptLabel();
         sendSearch();
       }
@@ -280,7 +281,7 @@
       // every show, so the page is already in a clean state, and if 'setMode' races ahead
       // of 'reset' it must not clobber an in-flight typed query.
       function applyMode(newMode) {
-        if (newMode !== 'files' && newMode !== 'grep' && newMode !== 'git' && newMode !== 'dirs') {
+        if (newMode !== 'files' && newMode !== 'grep' && newMode !== 'git') {
           return;
         }
         mode = newMode;
@@ -642,7 +643,7 @@
             renderResults();
             previewTitleEl.textContent = '';
             previewContentEl.textContent = '';
-            statusEl.textContent = 'type to search — Tab cycles Files/Grep/Git/Dirs · Ctrl+R grep mode · Ctrl+D defs · ↑ history';
+            statusEl.textContent = 'type to search — Tab cycles Files/Grep/Git · Ctrl+R grep mode · Ctrl+D defs · ↑ history';
             queryEl.focus();
           } else if (message.type === 'setMode') {
             applyMode(message.mode);
