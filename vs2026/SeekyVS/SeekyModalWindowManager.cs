@@ -641,12 +641,12 @@ internal static class SeekyModalWindowManager
     /// The VS active document as a workspace-relative path ('/' separators), for fff's
     /// current_file deprioritization. Null when unavailable or outside the workspace.
     /// </summary>
-    private static Task<string?> GetActiveDocumentRelativePathAsync(CancellationToken cancellationToken)
+    private static async Task<string?> GetActiveDocumentRelativePathAsync(CancellationToken cancellationToken)
     {
         // Editor RPC (GetActiveTextViewAsync) deadlocks the raw Win32 message loop when awaited on
         // the UI-pump thread — the same hazard HandleOpenAsync avoids by opening on the thread pool.
         // Resolve the active document off the UI thread so the awaiting search can never stall it.
-        return Task.Run<string?>(
+        return await Task.Run<string?>(
             async () =>
             {
                 try
