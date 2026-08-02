@@ -55,18 +55,19 @@
     #results {
       flex: 1;
       min-width: 0;
-      overflow-y: auto;
+      position: relative;
       border-right: 1px solid var(--border);
-      /* Rows are emitted worst-first by renderResults; the ::before spacer pushes the
-         whole stack to the bottom so results hug the prompt (telescope/fff.nvim style).
-         Plain column flow — flex column-reverse renders glitchy in Chromium. */
-      display: flex;
-      flex-direction: column;
     }
-    #results::before {
-      content: '';
-      display: block;
-      margin-top: auto; /* collapses when the list overflows */
+    /* Bottom-anchored scroller: pinned to the prompt, grows upward to max-height.
+       Plain block flow — flex tricks (column-reverse, auto margins) render glitchy
+       in Chromium inside scrollers (twice confirmed). */
+    #results-inner {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      max-height: 100%;
+      overflow-y: auto;
     }
     #results .row {
       padding: 3px 10px;
@@ -201,7 +202,7 @@
     the DOM via textContent (never innerHTML).
   -->
   <div id="main">
-    <div id="results"></div>
+    <div id="results"><div id="results-inner"></div></div>
     <div id="preview-pane">
       <div id="preview-title"></div>
       <pre id="preview-content"></pre>
@@ -221,7 +222,7 @@
       var bridge = window.chrome && window.chrome.webview;
       var queryEl = document.getElementById('query');
       var modeLabelEl = document.getElementById('mode-label');
-      var resultsEl = document.getElementById('results');
+      var resultsEl = document.getElementById('results-inner');
       var previewTitleEl = document.getElementById('preview-title');
       var previewContentEl = document.getElementById('preview-content');
       var statusEl = document.getElementById('status');
