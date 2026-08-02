@@ -46,6 +46,10 @@ internal static class SeekyModalWindowManager
     private const uint WsPopup = 0x80000000;
     private const uint WsVisible = 0x10000000;
     private const uint WsExToolWindow = 0x00000080;
+    private const uint WsExLayered = 0x00080000;
+    private const uint LwaAlpha = 0x00000002;
+    private const int DwmwaWindowCornerPreference = 33;
+    private const int DwmwcpRound = 2;
     private const int SwShow = 5;
     private const int SwHide = 0;
     private const uint MbOk = 0x0;
@@ -195,6 +199,7 @@ internal static class SeekyModalWindowManager
             GetWindowPosition(currentOwner, out int rx, out int ry);
             MoveWindow(windowHwnd, rx, ry, windowWidth, windowHeight, true);
             ShowWindow(windowHwnd, SwShow);
+            ApplyWindowEffects(windowHwnd); // opacity may have changed in settings.json
             SeekyLog.Info("ShowCore: re-shown (MoveWindow+ShowWindow returned)");
 
             // The user may have opened a different solution/folder since the last popup.
@@ -218,8 +223,9 @@ internal static class SeekyModalWindowManager
 
         IntPtr hwnd = CreateWindowEx(
             // Owned by devenv (below) the popup stays above VS without floating over other apps.
-            // WS_EX_TOOLWINDOW keeps it out of the taskbar/Alt+Tab.
-            WsExToolWindow,
+            // WS_EX_TOOLWINDOW keeps it out of the taskbar/Alt+Tab; WS_EX_LAYERED enables the
+            // configurable window opacity (SetLayeredWindowAttributes below).
+            WsExToolWindow | WsExLayered,
             WindowClassName,
             "Seeky",
             WsPopup | WsVisible,
@@ -237,6 +243,7 @@ internal static class SeekyModalWindowManager
         }
 
         windowHwnd = hwnd;
+        ApplyWindowEffects(hwnd);
         SeekyLog.Info($"ShowCore: window created (hwnd 0x{hwnd.ToInt64():X}) at ({x},{y}), owner 0x{owner.ToInt64():X}");
 
         // Own process, so the user-data folder is ours to choose (never next to devenv.exe).
@@ -466,6 +473,65 @@ internal static class SeekyModalWindowManager
 
     private const string MonoFontStack = "'Cascadia Code', Consolas, 'Courier New', monospace";
     private const string SystemFontStack = "'Segoe UI', system-ui, sans-serif";
+
+    /// <summary>
+    /// Applies window chrome effects: uniform opacity from settings.json (<c>"opacity"</c>,
+    /// percent 30–100, default 100) and rounded corners (Windows 11 DWM attribute, best-effort).
+    /// True see-through is not possible — WebView2 composites its own child window — so this is
+    /// whole-window alpha via WS_EX_LAYERED.
+    /// </summary>
+    private static void ApplyWindowEffects(IntPtr hwnd)
+    {
+        try
+        {
+            int opacity = ResolveOpacity();
+            if (opacity < 100)
+            {
+                byte alpha = (byte)(opacity * 255 / 100);
+                if (!SetLayeredWindowAttributes(hwnd, 0, alpha, LwaAlpha))
+                {
+                    SeekyLog.Info($"SetLayeredWindowAttributes failed (win32 {Marshal.GetLastWin32Error()})");
+                }
+            }
+
+            int round = DwmwcpRound;
+            _ = DwmSetWindowAttribute(hwnd, DwmwaWindowCornerPreference, ref round, sizeof(int));
+        }
+        catch (Exception ex)
+        {
+            SeekyLog.Error("ApplyWindowEffects failed", ex);
+        }
+    }
+
+    /// <summary>Reads <c>"opacity"</c> (percent, clamped 30–100) from settings.json; default 100.</summary>
+    private static int ResolveOpacity()
+    {
+        string settingsPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "SeekyVS",
+            "settings.json");
+        try
+        {
+            if (!File.Exists(settingsPath))
+            {
+                return 100;
+            }
+
+            using JsonDocument settings = JsonDocument.Parse(File.ReadAllText(settingsPath));
+            if (settings.RootElement.TryGetProperty("opacity", out JsonElement element)
+                && element.ValueKind == JsonValueKind.Number
+                && element.TryGetInt32(out int opacity))
+            {
+                return Math.Clamp(opacity, 30, 100);
+            }
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
+        {
+            SeekyLog.Error("settings.json: unreadable opacity", ex);
+        }
+
+        return 100;
+    }
 
     /// <summary>
     /// Resolves the popup font from <c>%LOCALAPPDATA%\SeekyVS\settings.json</c>
@@ -1344,6 +1410,12 @@ internal static class SeekyModalWindowManager
 
     [DllImport("user32.dll")]
     private static extern IntPtr SetFocus(IntPtr hWnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool SetLayeredWindowAttributes(IntPtr hwnd, uint crKey, byte bAlpha, uint dwFlags);
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int dwAttribute, ref int pvAttribute, int cbAttribute);
 
     [DllImport("user32.dll")]
     private static extern int GetSystemMetrics(int nIndex);
