@@ -57,9 +57,16 @@
       min-width: 0;
       overflow-y: auto;
       border-right: 1px solid var(--border);
-      /* Rows are emitted in reverse order by renderResults so the best match is the last
-         (bottom) row, adjacent to the prompt — plain block layout, no flex column-reverse
-         (Chromium renders it glitchy in a scrolling container). */
+      /* Rows are emitted worst-first by renderResults; the ::before spacer pushes the
+         whole stack to the bottom so results hug the prompt (telescope/fff.nvim style).
+         Plain column flow — flex column-reverse renders glitchy in Chromium. */
+      display: flex;
+      flex-direction: column;
+    }
+    #results::before {
+      content: '';
+      display: block;
+      margin-top: auto; /* collapses when the list overflows */
     }
     #results .row {
       padding: 3px 10px;
@@ -363,14 +370,18 @@
         if (!status) {
           return null;
         }
-        var s = String(status).toLowerCase();
+        var normalized = String(status).trim().toLowerCase();
+        // fff reports clean/tracked files too (rendered as 'cl') — only badge real changes.
+        if (normalized === '' || normalized === 'cl' || normalized === 'clean') {
+          return null;
+        }
         var cls = 'dim';
         var text = status.length <= 3 ? status : status.slice(0, 2);
-        if (s.indexOf('untrack') >= 0 || s === '??') { cls = 'ut'; text = '??'; }
-        else if (s.indexOf('mod') >= 0) { cls = 'm'; text = 'M'; }
-        else if (s.indexOf('add') >= 0) { cls = 'ut'; text = 'A'; }
-        else if (s.indexOf('del') >= 0) { cls = 'm'; text = 'D'; }
-        else if (s.indexOf('ren') >= 0) { cls = 'dim'; text = 'R'; }
+        if (normalized.indexOf('untrack') >= 0 || normalized === '??') { cls = 'ut'; text = '??'; }
+        else if (normalized.indexOf('mod') >= 0) { cls = 'm'; text = 'M'; }
+        else if (normalized.indexOf('add') >= 0) { cls = 'ut'; text = 'A'; }
+        else if (normalized.indexOf('del') >= 0) { cls = 'm'; text = 'D'; }
+        else if (normalized.indexOf('ren') >= 0) { cls = 'dim'; text = 'R'; }
         var badge = document.createElement('span');
         badge.className = `git-badge ${cls}`;
         badge.textContent = text;
