@@ -304,24 +304,28 @@ Stale search responses are discarded with a generation counter (new keystroke wi
 ### Settings file
 
 User settings live in **`%LOCALAPPDATA%\SeekyVS\settings.json`**, re-read on **every popup
-show** (edit it, reopen the popup — no VS restart needed). Only one setting so far:
+show** (edit it, reopen the popup — no VS restart needed):
 
 ```json
 {
-  "fontFamily": "mono"
+  "fontFamily": "mono",
+  "opacity": 92
 }
 ```
 
-- `"mono"` (or the file/key missing) → `'Cascadia Code', Consolas, 'Courier New', monospace` —
-  the default.
-- `"system"` → `'Segoe UI', system-ui, sans-serif` — the Windows system UI font stack.
-- Any other string is used verbatim as the CSS `font-family` value, e.g.
+- `"fontFamily"`: `"mono"` (or missing) → `'Cascadia Code', Consolas, 'Courier New', monospace` —
+  the default; `"system"` → `'Segoe UI', system-ui, sans-serif` — the Windows system UI font
+  stack; any other string is used verbatim as the CSS `font-family` value, e.g.
   `{ "fontFamily": "'JetBrains Mono', 'Cascadia Code', monospace" }`. Values containing
   `;{}<>"'` or control characters are rejected (CSS-injection guard, logged) and the default is
   used.
+- `"opacity"`: whole-window opacity in percent, clamped 30–100, default 100 (opaque). Applied
+  via `WS_EX_LAYERED` + `SetLayeredWindowAttributes` — true per-pixel see-through isn't possible
+  because WebView2 composites its own child window. The popup also requests rounded corners via
+  the Windows 11 DWM corner attribute (no-op elsewhere).
 
 If the file doesn't exist, a default `{ "fontFamily": "mono" }` is written once so the file is
-discoverable. Malformed JSON is logged and ignored (default applies). The resolved value is
+discoverable. Malformed JSON is logged and ignored (defaults apply). The resolved font is
 posted to the page as `{ "type": "setFont", "fontFamily": "…" }`.
 
 ## Open questions
