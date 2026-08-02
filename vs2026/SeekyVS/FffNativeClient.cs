@@ -120,7 +120,7 @@ internal sealed partial class FffNativeClient : IDisposable
                     cancellationToken.ThrowIfCancellationRequested();
                     ThrowIfNotStartedCore();
 
-                    IntPtr result = Native.fff_search_directories(handle, query, currentFile, 0, 0, (uint)maxResults);
+                    IntPtr result = CallWithWatchdog("search_directories", () => Native.fff_search_directories(handle, query, currentFile, 0, 0, (uint)maxResults));
                     IntPtr payload = UnwrapResult(result, "search_directories");
                     try
                     {
@@ -268,8 +268,8 @@ internal sealed partial class FffNativeClient : IDisposable
     private List<FileItem> SearchFilesCore(string query, string? currentFile, int maxResults, bool useGlob)
     {
         IntPtr result = useGlob
-            ? Native.fff_glob(handle, query, currentFile, 0, 0, (uint)maxResults)
-            : Native.fff_search(handle, query, currentFile, 0, 0, (uint)maxResults, 0, 0);
+            ? CallWithWatchdog("glob", () => Native.fff_glob(handle, query, currentFile, 0, 0, (uint)maxResults))
+            : CallWithWatchdog("search", () => Native.fff_search(handle, query, currentFile, 0, 0, (uint)maxResults, 0, 0));
         IntPtr payload = UnwrapResult(result, useGlob ? "glob" : "search");
         try
         {
@@ -316,7 +316,7 @@ internal sealed partial class FffNativeClient : IDisposable
                     cancellationToken.ThrowIfCancellationRequested();
                     ThrowIfNotStartedCore();
 
-                    IntPtr result = Native.fff_live_grep(
+                    IntPtr result = CallWithWatchdog("live_grep", () => Native.fff_live_grep(
                         handle,
                         query,
                         (byte)mode,
@@ -328,7 +328,7 @@ internal sealed partial class FffNativeClient : IDisposable
                         timeBudgetMs: 0,
                         beforeContext: 0,
                         afterContext: 0,
-                        classifyDefinitions: true);
+                        classifyDefinitions: true));
                     IntPtr payload = UnwrapResult(result, "live_grep");
                     try
                     {
@@ -375,6 +375,28 @@ internal sealed partial class FffNativeClient : IDisposable
                 }
             },
             cancellationToken);
+    }
+
+    /// <summary>
+    /// Wraps a native call with a hang detector: if the call is still running after 5s a
+    /// WATCHDOG line is logged (a hung fff call otherwise looks identical to "no results").
+    /// Slow-but-finished calls over 1s are logged too.
+    /// </summary>
+    private static IntPtr CallWithWatchdog(string name, Func<IntPtr> call)
+    {
+        using var hangTimer = new System.Threading.Timer(
+            _ => SeekyLog.Info($"WATCHDOG: fff {name} still running after 5s (possible native hang)"),
+            null,
+            5000,
+            Timeout.Infinite);
+        var stopwatch = Stopwatch.StartNew();
+        IntPtr result = call();
+        if (stopwatch.ElapsedMilliseconds > 1000)
+        {
+            SeekyLog.Info($"fff {name} took {stopwatch.ElapsedMilliseconds}ms");
+        }
+
+        return result;
     }
 
     /// <summary>

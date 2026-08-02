@@ -195,6 +195,7 @@ internal static class SeekyModalWindowManager
             GetWindowPosition(currentOwner, out int rx, out int ry);
             MoveWindow(windowHwnd, rx, ry, windowWidth, windowHeight, true);
             ShowWindow(windowHwnd, SwShow);
+            SeekyLog.Info("ShowCore: re-shown (MoveWindow+ShowWindow returned)");
 
             // The user may have opened a different solution/folder since the last popup.
             RefreshWorkspaceAsync().Forget();
@@ -307,6 +308,7 @@ internal static class SeekyModalWindowManager
         {
             SeekyLog.Info("HidePopup: hiding window");
             ShowWindow(windowHwnd, SwHide);
+            SeekyLog.Info("HidePopup: ShowWindow(SW_HIDE) returned");
         }
     }
 
@@ -972,8 +974,29 @@ internal static class SeekyModalWindowManager
             thread.SetApartmentState(ApartmentState.STA);
             thread.Start();
             ready.Wait();
+
+            // Watchdog: every 30s enqueue a heartbeat; if the pump doesn't process it within
+            // 90s, the UI thread is stalled (blocked inside a handler, not dead — the existing
+            // PostThreadMessage/GetMessage failure logs never fire in that case).
+            pumpHeartbeatProcessedUtc = DateTime.UtcNow;
+            pumpWatchdog = new System.Threading.Timer(
+                _ =>
+                {
+                    if (DateTime.UtcNow - pumpHeartbeatProcessedUtc > TimeSpan.FromSeconds(90))
+                    {
+                        SeekyLog.Info("WATCHDOG: UI pump unresponsive >90s (stalled inside a handler)");
+                    }
+
+                    EnqueueWork(() => pumpHeartbeatProcessedUtc = DateTime.UtcNow);
+                },
+                null,
+                TimeSpan.FromSeconds(30),
+                TimeSpan.FromSeconds(30));
         }
     }
+
+    private static System.Threading.Timer? pumpWatchdog;
+    private static DateTime pumpHeartbeatProcessedUtc;
 
     private static void UiThreadMain(ManualResetEventSlim ready)
     {
