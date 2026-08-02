@@ -198,11 +198,12 @@ internal static class SeekyModalWindowManager
             SeekyLog.Info("ShowCore: re-shown (MoveWindow+ShowWindow returned)");
 
             // The user may have opened a different solution/folder since the last popup.
-            RefreshWorkspaceAsync().Forget();
+            // On the threadpool — workspace resolution does extensibility RPC (no RPC on the pump).
+            Task.Run(() => RefreshWorkspaceAsync()).Forget();
             PostJson(new { type = "reset" });
             PostJson(new { type = "setMode", mode = requestedMode });
             PostJson(new { type = "setFont", fontFamily = ResolveFontFamily() });
-            PostHistoryAsync().Forget();
+            Task.Run(() => PostHistoryAsync()).Forget();
             FocusPopup();
             return;
         }
@@ -288,13 +289,14 @@ internal static class SeekyModalWindowManager
             SeekyLog.Info($"DOMContentLoaded: posting setMode '{requestedMode}'");
             PostJson(new { type = "setMode", mode = requestedMode });
             PostJson(new { type = "setFont", fontFamily = ResolveFontFamily() });
-            PostHistoryAsync().Forget();
+            Task.Run(() => PostHistoryAsync()).Forget();
         };
         coreWebView.Navigate("https://seeky.vs/index.html");
         SeekyLog.Info($"ShowCore: navigated to https://seeky.vs/index.html (mapped to '{webUiDir}')");
 
         // Kick off the search backend in the background; status is posted to the page.
-        RefreshWorkspaceAsync().Forget();
+        // On the threadpool — workspace resolution does extensibility RPC (no RPC on the pump).
+        Task.Run(() => RefreshWorkspaceAsync()).Forget();
 
         // Grab keyboard focus so the user can type immediately (VS has focus when the command runs).
         FocusPopup();
@@ -366,7 +368,11 @@ internal static class SeekyModalWindowManager
                         string mode = GetString(doc.RootElement, "mode") ?? "files";
                         string grepMode = GetString(doc.RootElement, "grepMode") ?? "plain";
                         SeekyLog.Info($"WebMessageReceived: search mode={mode} grepMode={grepMode} query='{query}'");
-                        HandleSearchAsync(query, mode, grepMode).Forget();
+
+                        // On the threadpool, not the pump: the search path makes extensibility
+                        // RPC calls (Editor/Workspaces), and the SDK's sync-over-async lazy
+                        // service init deadlocks the pump thread.
+                        Task.Run(() => HandleSearchAsync(query, mode, grepMode)).Forget();
                         break;
                     }
 
@@ -439,8 +445,22 @@ internal static class SeekyModalWindowManager
         element.TryGetProperty(property, out JsonElement value)
         && value.ValueKind == JsonValueKind.True;
 
-    private static void PostJson(object message) =>
-        coreWebView?.PostWebMessageAsJson(JsonSerializer.Serialize(message));
+    // WebView2 objects are single-threaded (they belong to the pump thread), so every post is
+    // marshaled through the pump's work queue. Searches, workspace refresh, and history run on
+    // the threadpool (extensibility RPC must never run on the pump — the SDK does sync-over-async
+    // internally and deadlocks it, see the 2026-08-02 stack capture in README pitfalls).
+    private static void PostJson(object message)
+    {
+        string json = JsonSerializer.Serialize(message);
+        if (GetCurrentThreadId() == uiThreadId)
+        {
+            coreWebView?.PostWebMessageAsJson(json);
+        }
+        else
+        {
+            EnqueueWork(() => coreWebView?.PostWebMessageAsJson(json));
+        }
+    }
 
     private static void PostStatus(string message) => PostJson(new { type = "status", message });
 
@@ -621,41 +641,55 @@ internal static class SeekyModalWindowManager
     /// The VS active document as a workspace-relative path ('/' separators), for fff's
     /// current_file deprioritization. Null when unavailable or outside the workspace.
     /// </summary>
-    private static async Task<string?> GetActiveDocumentRelativePathAsync(CancellationToken cancellationToken)
+    private static Task<string?> GetActiveDocumentRelativePathAsync(CancellationToken cancellationToken)
     {
-        try
-        {
-            if (extensibility is null || lastClientContext is null || workspaceDir is null)
+        // Editor RPC (GetActiveTextViewAsync) deadlocks the raw Win32 message loop when awaited on
+        // the UI-pump thread — the same hazard HandleOpenAsync avoids by opening on the thread pool.
+        // Resolve the active document off the UI thread so the awaiting search can never stall it.
+        return Task.Run<string?>(
+            async () =>
             {
-                return null;
-            }
+                try
+                {
+                    if (extensibility is null || lastClientContext is null || workspaceDir is null)
+                    {
+                        return null;
+                    }
 
-            using ITextViewSnapshot? textView =
-                await extensibility.Editor().GetActiveTextViewAsync(lastClientContext, cancellationToken);
-            Uri? documentUri = textView?.Document?.Uri;
-            if (documentUri is null || !documentUri.IsFile)
-            {
-                return null;
-            }
+                    using ITextViewSnapshot? textView =
+                        await extensibility.Editor().GetActiveTextViewAsync(lastClientContext, cancellationToken);
+                    Uri? documentUri = textView?.Document?.Uri;
+                    if (documentUri is null || !documentUri.IsFile)
+                    {
+                        return null;
+                    }
 
-            string fullPath = documentUri.LocalPath;
-            string root = workspaceDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
-            if (!fullPath.StartsWith(root, StringComparison.OrdinalIgnoreCase))
-            {
-                return null;
-            }
+                    string? root = workspaceDir;
+                    if (root is null)
+                    {
+                        return null;
+                    }
 
-            return fullPath[root.Length..].Replace(Path.DirectorySeparatorChar, '/');
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            return null;
-        }
-        catch (Exception ex)
-        {
-            SeekyLog.Error("Active document path query failed", ex);
-            return null;
-        }
+                    string fullPath = documentUri.LocalPath;
+                    string prefix = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                    if (!fullPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return null;
+                    }
+
+                    return fullPath[prefix.Length..].Replace(Path.DirectorySeparatorChar, '/');
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    return null;
+                }
+                catch (Exception ex)
+                {
+                    SeekyLog.Error("Active document path query failed", ex);
+                    return null;
+                }
+            },
+            cancellationToken);
     }
 
     /// <summary>Posts past queries (fff history LMDB, populated by track_query picks) to the

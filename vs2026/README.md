@@ -122,6 +122,16 @@ same — these failures are all silent or cryptic without instrumentation.
    packaging failures in a row; the last was an MSBuild `TypeInitializationException` inside
    Roslyn's BuildHost — our compile-time Microsoft.Build 17.14 vs the locator-registered VS 2026
    MSBuild 18.x. Not worth fighting; fff's `classify_definitions` is the cheap alternative.
+7. **Extensibility RPC deadlocks the custom UI thread (the "installed build hangs" bug).** The
+   symptom: first search never returns, then the popup never re-shows, while Esc/WebView2 events
+   keep working. `dotnet-stack report -p <host pid>` (run elevated — the host inherits VS's
+   elevation) caught the pump thread here:
+   `DrainWorkQueue → HandleSearchAsync → extensibility.Editor() → AsyncLazy.GetValue →
+   Task.InternalWait` — the SDK lazy-creates the editor host service with sync-over-async, and
+   the host's main thread was itself blocked, forming a cycle. **Rule: no extensibility RPC on
+   the pump thread.** Searches, workspace refresh, and history run via `Task.Run`; all page
+   posts are marshaled back through the pump's work queue (`PostJson`). The pump/fff watchdogs
+   (heartbeat + 5s native-call hang detector) stay in the build to localize any future stall.
 
 ## What was built and verified
 
