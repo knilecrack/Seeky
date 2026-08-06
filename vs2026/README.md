@@ -121,8 +121,16 @@ same — these failures are all silent or cryptic without instrumentation.
 6. **Roslyn/`MSBuildWorkspace` in the out-of-proc host: abandoned.** A symbols mode hit three
    packaging failures in a row; the last was an MSBuild `TypeInitializationException` inside
    Roslyn's BuildHost — our compile-time Microsoft.Build 17.14 vs the locator-registered VS 2026
-   MSBuild 18.x. Not worth fighting; fff's `classify_definitions` is the cheap alternative.
-7. **Extensibility RPC deadlocks the custom UI thread (the "installed build hangs" bug).** The
+   MSBuild 18.x. Not worth fighting. The shipped Symbols mode classifies declarations on the C#
+   side instead (`SymbolClassifier`); see "Symbol search: why not Roslyn/LSP" below.
+7. **fff's `page_limit` counts FILES SEARCHED, not matches.** `GrepAsync` passed its
+   `maxResults` (100) straight through as `page_limit`, so live grep searched only the first 100
+   files of the workspace and reported the truncated result as complete — invisible on this repo
+   (51 content-indexed files), silently wrong on any real solution. fff reports where to resume in
+   `next_file_offset`; `GrepAsync`/`GrepPageAsync` now page until enough matches or the files run
+   out. Note the page also stops on an internal match cap (~600), so pages advance by as few as
+   6 files: a full msbuild sweep is 130 pages.
+8. **Extensibility RPC deadlocks the custom UI thread (the "installed build hangs" bug).** The
    symptom: first search never returns, then the popup never re-shows, while Esc/WebView2 events
    keep working. `dotnet-stack report -p <host pid>` (run elevated — the host inherits VS's
    elevation) caught the pump thread here:
@@ -142,8 +150,9 @@ same — these failures are all silent or cryptic without instrumentation.
   `Microsoft.Web.WebView2` **1.0.4078.44** (only the Core assembly is used; the Wpf/WinForms
   DLLs ship inertly in the VSIX and are never loaded).
 - `SeekyVSExtension.cs` — extension entrypoint; metadata id `SeekyVS.3f6b2d8a-…`, display name "Seeky".
-- `SeekyFindFilesCommand.cs` / `SeekyLiveGrepCommand.cs` — "Seeky: Find Files" / "Seeky: Live
-  Grep" (Ctrl+Shift+G), Tools menu → `SeekyModalWindowManager.ShowAsync(Extensibility, context,
+- `SeekyFindFilesCommand.cs` / `SeekyLiveGrepCommand.cs` / `SeekySymbolsCommand.cs` — "Seeky: Find
+  Files" (Ctrl+Shift+Alt+P) / "Seeky: Live Grep" (Ctrl+Shift+G) / "Seeky: Symbols"
+  (Ctrl+Shift+Alt+O), Tools menu → `SeekyModalWindowManager.ShowAsync(Extensibility, context,
   mode)`. (The original `SeekyToolWindowCommand` opened the dead-end Remote UI tool window; see
   git history.)
 - `SeekyModalWindowManager.cs` — the whole modal window: dedicated STA thread with a Win32 message
@@ -162,6 +171,15 @@ same — these failures are all silent or cryptic without instrumentation.
   workspace (`fff_restart_index` on change), `fff_wait_for_scan` with progress status,
   frecency LMDB under `<workspace>/.vs/seeky/`, `fff_track_query` on open. Replaces the deleted
   `FffMcpClient.cs` (MCP stdio sidecar).
+- `SymbolClassifier.cs` / `SymbolIndex.cs` / `FuzzyMatcher.cs` — the **Symbols** picker.
+  `SymbolClassifier` decides whether one source line declares a symbol and extracts its kind and
+  name (C#/VB/C++/TS/JS/Python/Rust/Go; the C-family rule is gated on a leading modifier, which is
+  what keeps call sites out). `SymbolIndex` sweeps the workspace once with a paged regex grep over
+  declaration-shaped lines, classifies the results, caches them per workspace, and fuzzy-filters
+  in-process per keystroke — a stale index is served immediately while it re-sweeps behind it.
+  `FuzzyMatcher` ranks names camel-hump-first (`shwcr` → `ShowCoreAsync`); its boundary-preferring
+  pass is greedy, so a failed pass retries plain left-to-right, which is complete for subsequence
+  detection (without that, `targetresult` did not match `TargetResult`).
 - `Tools/fff_c.dll` — the native fff search library (sha256-verified, shipped in the VSIX as
   content next to the extension assembly).
 - `SeekyLog.cs` — thread-safe file logger (`%LOCALAPPDATA%\SeekyVS\seekyvs.log`); every step of
@@ -170,13 +188,17 @@ same — these failures are all silent or cryptic without instrumentation.
 - `SeekyToolWindow.cs` / `SeekyToolWindowContent.cs` / `.xaml` — **dead-end Remote UI experiment,
   kept for documentation only** (see above).
 - `WebUI/index.html` — **Telescope-style search UI** (plain JS/CSS, no build step): prompt row
-  (`Find Files> ` / `Live Grep (fuzzy)> ` / `Git Modified> `) at the bottom,
+  (`Find Files> ` / `Live Grep (fuzzy)> ` / `Symbols> ` / `Git Modified> `) at the bottom,
   results left + preview pane right (~50/50), status line above the prompt. Modes cycle with
-  **Tab** or **Ctrl+G**: files → grep → git. (A fourth "Directories" mode exists in the backend
-  but is hidden from the cycle for now.) Other keys: **Ctrl+R** cycles grep sub-mode
+  **Tab** or **Ctrl+G**: files → grep → symbols → git. (A fifth "Directories" mode exists in the
+  backend but is hidden from the cycle for now.) Symbols is the only mode that searches on an
+  empty query — it lists the workspace's symbols, so the picker is useful before the first
+  keystroke; its rows render `kind  Name  path:line` with the fuzzy highlight on the **name**
+  (`nameRanges`), not the source line. Other keys: **Ctrl+R** cycles grep sub-mode
   plain → regex → **fuzzy** (default — fff's signature mode), **Ctrl+D** toggles a
-  definitions-only filter on grep results (matches fff's `classify_definitions` tagged with a
-  `def` badge), **↑/↓** (and **Ctrl+J/K**) move — and **↑ in an empty prompt cycles past
+  definitions-only filter on grep results (`SymbolClassifier`-tagged, shown with a
+  `def` badge), **↑/↓** (and **Ctrl+J/K**, **Ctrl+N/P** readline-style) move — and **↑ in an
+  empty prompt with no results listed cycles past
   queries** (fff's history LMDB, populated by frecency picks), **Enter** opens at the match
   line (directories open in Windows Explorer), **Esc** closes; search is debounced 150ms;
   selection drives the preview. Result rows carry git-status badges (`M`, `??`) from fff;
@@ -237,9 +259,17 @@ fff's signature **fuzzy grep** mode plus frecency learning. `FffNativeClient` im
   `fff_refresh_git_status` runs on every popup show. "Git Modified" mode lists/searches only
   files with a non-empty status — the normal fuzzy search filtered client-side, with an
   `fff_glob '*'` fallback for the empty query (all modified files, ranked by frecency).
-- **Definitions**: `fff_live_grep` runs with `classify_definitions=true`; matches tagged
-  `is_definition` get a `def` badge and the page's **Ctrl+D** definitions-only filter — the
-  cheap replacement for the abandoned Roslyn symbols mode.
+- **Definitions**: classified by `SymbolClassifier` on the C# side — declaration lines get a `def`
+  badge and the page's **Ctrl+D** definitions-only filter. **Not** fff's `classify_definitions`:
+  the flag is passed and the `is_definition` bit is read, but `fff_c.dll` v0.10.1 reports `false`
+  for every match, including fff's own documented cases (a fixture of `class Foo {`, `fn bar() {}`,
+  `def baz():`, `struct Q {}` scores 0/13). Until that is fixed upstream the bit is dead, and the
+  `def` badge silently never appeared.
+- **Symbols**: a paged `fff_live_grep` regex sweep over declaration-shaped lines feeds
+  `SymbolClassifier`; the result is cached per workspace and fuzzy-filtered in-process. Full sweep
+  cost measured against the shipped DLL: **2.6s / 36 899 symbols** on msbuild (2692 indexed files,
+  76 212 candidate lines), 0.55s on VsVim, 0.44s on eShop; per-keystroke filtering is ~20ms over
+  37k symbols.
 - **Binary guard**: items carry `is_binary`; binary files are never read for preview — the
   page shows a neutral note instead.
 - **Current-file deprioritization**: file/dir searches pass VS's active document as fff's
@@ -266,7 +296,10 @@ Page → host:
 ```json
 { "type": "search",  "query": "foo", "mode": "grep", "grepMode": "fuzzy" }
                                                     // mode: "files" | "grep" | "git" | "dirs"
+                                                    //     | "symbols"
                                                     // grepMode: "plain" | "regex" | "fuzzy"
+                                                    // symbols is the only mode sent with an empty
+                                                    //   query (it lists the workspace's symbols)
 { "type": "preview", "path": "src/a.cs", "line": 42, "binary": false }
                                                     // line optional; binary=true asks the host
                                                     // to skip reading the file
@@ -288,13 +321,18 @@ Host → page:
                                                     // grep mode: +line/col/text, isDefinition,
                                                     //   and `ranges`: [start,end) UTF-16 char
                                                     //   indices into `text` (may be [])
+                                                    // symbols mode: name=symbol name, +kind
+                                                    //   ("class"/"method"/"property"/"field"/…)
+                                                    //   and `nameRanges`: [start,end) indices
+                                                    //   into `name`, not `text`
 { "type": "preview", "path": "src/a.cs", "content": "…file text (capped 200KB/2000 lines)…",
   "line": 42 }                                      // line optional (null for files mode)
 { "type": "preview", "path": "src/a.dll", "binary": true }
                                                     // binary files: no content, page shows a note
 { "type": "status",  "message": "indexing…" }       // status-line text: indexing, errors, etc.
 { "type": "setQuery", "query": "…" }                // honored by the page; not currently sent
-{ "type": "setMode",  "mode": "files" }             // sent on show (Find Files / Live Grep commands)
+{ "type": "setMode",  "mode": "files" }             // sent on show (Find Files / Live Grep /
+                                                    //   Symbols commands)
 { "type": "history",  "queries": ["foo", "bar"] }   // past queries, most recent first;
                                                     // ↑ in an empty prompt cycles them
 ```
@@ -339,10 +377,13 @@ typing reaches the page immediately).
 
 Remaining:
 
-1. **Theme bridging.** The page is hardcoded dark (`#1e1e2e`); matching VS's actual theme needs
-   the theme color APIs (`IThemingService`/`EnvironmentColors` equivalents in the out-of-proc SDK)
-   pushed into the page as CSS variables — mirrors what `media/style.css` does with VS Code theme
-   variables.
+1. **Theme bridging.** The page ships a deliberate phosphor-CRT theme (`--bg: #050806`,
+   `--accent: #00ff41`) rather than VS's colors, and the popup's window-class border brush is
+   painted to match (`CreateSolidBrush(0x0041FF00)` — COLORREF is `0x00BBGGRR`). Following VS's
+   actual theme instead would need the theme color APIs (`IThemingService`/`EnvironmentColors`
+   equivalents in the out-of-proc SDK) pushed into the page as CSS variables — mirrors what
+   `media/style.css` does with VS Code theme variables. Note that adopting VS theming would mean
+   dropping the phosphor look, so this is now a choice rather than a gap.
 2. **Chromeless UX details.** No drag move (would need `WM_NCHITTEST` handling), no resize, no
    border. The window inherits the host process's DPI awareness (likely system-aware); per-monitor
    V2 would need a manifest we don't control or `SetProcessDpiAwarenessContext` — untested on
@@ -387,7 +428,7 @@ the VS main window, showing the Telescope-style search UI (`https://seeky.vs/ind
   workspace-relative paths from fff; the first result is selected and its file content shows
   in the preview pane (right).
 - **Live Grep:** press **Tab** (or Ctrl+G) — the prompt label switches to "Live Grep (fuzzy)> ";
-  typing shows `path:line: matched text` rows with the matched span highlighted in accent blue;
+  typing shows `path:line: matched text` rows with the matched span burned in near-white phosphor;
   the preview highlights the match line and scrolls to it, with the matched span also
   highlighted inside the line. **Ctrl+R** cycles the sub-mode: plain (literal) → regex → fuzzy (default). Fuzzy demo:
   searching `shwcr` should match `ShowCoreAsync`-style identifiers that plain/regex would miss —
@@ -487,16 +528,43 @@ Done: extension shell, command, modal window, WebView2 hosting, two-way messagin
 VS 2026 Insiders. Built since (pending F5 verification): native fff-c backend (LibraryImport FFI,
 fuzzy files + plain/regex/fuzzy grep, frecency tracking, wait-for-scan warmup), Telescope-style
 UI (find files / live grep, preview pane, open-in-VS at the match line), match highlighting from
-fff match ranges, and settings-file font configuration.
+fff match ranges, settings-file font configuration, and the **Symbols** picker
+(`SymbolClassifier`/`SymbolIndex`/`FuzzyMatcher` — see below; the classifier and matcher are
+covered by a scratch test harness: 41 classification cases, plus a property test asserting that
+200 000 generated true subsequences all match).
 
 **Attempted and abandoned:** a Roslyn/`MSBuildWorkspace` C# workspace-symbols mode (three
 packaging-related runtime failures in a row, the last being an MSBuild
 `TypeInitializationException` in Roslyn's BuildHost — a version clash between our compile-time
 Microsoft.Build 17.14 and the locator-registered VS 2026 MSBuild 18.x in the out-of-proc host).
-Cost-benefit says no; if a symbols mode is ever revisited, fff's own
-`classify_definitions` grep flag is the far cheaper route (no Roslyn, no MSBuild).
 
-Remaining, in rough order:
+### Symbol search: why not Roslyn/LSP
+
+The Symbols mode is grep + a line classifier, not semantic analysis. That is a deliberate choice,
+and the alternatives were checked against the SDK rather than assumed:
+
+- **The Extensibility SDK has no consumer-side symbol API.** `VisualStudioExtensibility` exposes
+  `Workspaces()`, `Editor()`, `Documents()`, `Views()`, `Shell()`, `Settings()`, `Configuration()`,
+  `OutputWindow()` — and `Workspaces()` is the project-system query model (projects, files,
+  properties, references). Nothing returns symbols. The SDK's `LanguageServer` namespace is
+  `LanguageServerProvider`: you *ship* a server for your own language, you cannot query VS's.
+- **Roslyn's own OOP services are not callable from a third party.** VS 18 registers
+  `Microsoft.VisualStudio.LanguageServices.NavigateToSearchCore64` / `…SymbolFinderCore64` /
+  `…FindUsagesCore64` (the Ctrl+T backend), but they are Roslyn-internal ServiceHub services driven
+  by Roslyn's `RemoteHostClient` with pinned solution checksums. `VisualStudioExtensibility
+  .ServiceBroker` *is* public, so the transport exists — there is just no supported moniker.
+- **Remaining real options, if semantic symbols are ever wanted:** spawn the standalone
+  `Microsoft.CodeAnalysis.LanguageServer` (the C# Dev Kit server, ~166 MB) and speak
+  `workspace/symbol` — it runs its own BuildHost, which sidesteps the MSBuild clash above, at the
+  cost of a second process holding a second copy of the solution; or a small in-proc VSSDK shim
+  MEF-importing Roslyn's live `VisualStudioWorkspace` and proffering results as a brokered service
+  (best fidelity, but puts code back in devenv).
+
+What Symbols gives up: inherited members, partials resolved as one type, generated code, and any
+declaration no keyword introduces (TypeScript class members, modifier-less C++ methods). What it
+buys: no second process, no compilation, every language at once, and a sweep measured in seconds.
+
+### Remaining, in rough order
 
 1. **F5-verify the fff-c + Telescope-UI stack** (steps in "How to run"; fuzzy grep demo: `shwcr`
    should match `ShowCoreAsync`).

@@ -34,6 +34,12 @@ internal sealed partial class FffNativeClient : IDisposable
     private const uint CreateOptionsVersion = 2; // FFF_CREATE_OPTIONS_VERSION
     private const int ScanWaitTimeoutMs = 30_000;
 
+    /// <summary>Files searched per <c>fff_live_grep</c> call (its <c>page_limit</c>).</summary>
+    internal const uint c_FilePageLimit = 512;
+
+    private const int MaxGrepPages = 400;
+    private const int GrepBudgetMs = 3_000;
+
     private static bool resolverInstalled;
 
     private readonly System.Threading.Lock gate = new();
@@ -67,6 +73,13 @@ internal sealed partial class FffNativeClient : IDisposable
 
     /// <summary>Grep results plus the regex-fallback notice, if any.</summary>
     internal sealed record GrepResult(IReadOnlyList<GrepMatch> Matches, string? RegexFallbackError);
+
+    /// <summary>
+    /// One page of grep results. <paramref name="NextFileOffset"/> is 0 when the search reached
+    /// the end of the file set; otherwise it is the offset to pass to the next call.
+    /// </summary>
+    internal sealed record GrepPage(
+        IReadOnlyList<GrepMatch> Matches, string? RegexFallbackError, uint NextFileOffset, uint TotalFiles);
 
     /// <summary>
     /// Ensures an fff instance exists for <paramref name="dir"/>: creates it on first use,
@@ -305,8 +318,11 @@ internal sealed partial class FffNativeClient : IDisposable
         }
     }
 
-    /// <summary>Content search in the given mode; the query is passed raw (fff parses
-    /// <c>*.cs pattern</c>-style constraints itself).</summary>
+    /// <summary>
+    /// Content search in the given mode; the query is passed raw (fff parses
+    /// <c>*.cs pattern</c>-style constraints itself). Pages through the file set until
+    /// <paramref name="maxResults"/> matches are collected or the files run out.
+    /// </summary>
     public Task<GrepResult> GrepAsync(string query, GrepMode mode, int maxResults, CancellationToken cancellationToken)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxResults);
@@ -314,70 +330,132 @@ internal sealed partial class FffNativeClient : IDisposable
         return Task.Run(
             () =>
             {
-                lock (gate)
+                var matches = new List<GrepMatch>(maxResults);
+                string? fallbackError = null;
+                uint fileOffset = 0;
+                var stopwatch = Stopwatch.StartNew();
+
+                // fff's page_limit counts FILES SEARCHED, not matches: a single call stops after
+                // page_limit files and reports where to resume. Passing maxResults straight
+                // through (as this did) silently searched only the first 100 files of the
+                // workspace and reported the result as complete.
+                for (int page = 0; page < MaxGrepPages; page++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    ThrowIfNotStartedCore();
-
-                    IntPtr result = CallWithWatchdog("live_grep", () => Native.fff_live_grep(
-                        handle,
-                        query,
-                        (byte)mode,
-                        maxFileSize: 0,
-                        maxMatchesPerFile: 0,
-                        smartCase: true,
-                        fileOffset: 0,
-                        pageLimit: (uint)maxResults,
-                        timeBudgetMs: 0,
-                        beforeContext: 0,
-                        afterContext: 0,
-                        classifyDefinitions: true));
-                    IntPtr payload = UnwrapResult(result, "live_grep");
-                    try
+                    GrepPage result = GrepPageCore(query, mode, fileOffset, c_FilePageLimit);
+                    fallbackError ??= result.RegexFallbackError;
+                    foreach (GrepMatch match in result.Matches)
                     {
-                        string? fallbackError = PtrToString(Native.fff_grep_result_get_regex_fallback_error(payload));
-                        if (fallbackError is not null)
+                        matches.Add(match);
+                        if (matches.Count >= maxResults)
                         {
-                            SeekyLog.Info($"fff live_grep: regex fallback: {fallbackError}");
+                            return new GrepResult(matches, fallbackError);
                         }
-
-                        uint count = Native.fff_grep_result_get_count(payload);
-                        var matches = new List<GrepMatch>((int)count);
-                        for (uint i = 0; i < count; i++)
-                        {
-                            IntPtr match = Native.fff_grep_result_get_match(payload, i);
-                            if (match == IntPtr.Zero)
-                            {
-                                continue;
-                            }
-
-                            string? path = PtrToString(Native.fff_grep_match_get_relative_path(match));
-                            if (path is null)
-                            {
-                                continue;
-                            }
-
-                            string text = PtrToString(Native.fff_grep_match_get_line_content(match)) ?? string.Empty;
-                            matches.Add(new GrepMatch(
-                                path,
-                                checked((int)Native.fff_grep_match_get_line_number(match)),
-                                text,
-                                (int)Native.fff_grep_match_get_col(match),
-                                ReadMatchRanges(match, text),
-                                PtrToString(Native.fff_grep_match_get_git_status(match)),
-                                Native.fff_grep_match_get_is_binary(match),
-                                Native.fff_grep_match_get_is_definition(match)));
-                        }
-
-                        return new GrepResult(matches, fallbackError);
                     }
-                    finally
+
+                    if (result.NextFileOffset == 0 || stopwatch.ElapsedMilliseconds > GrepBudgetMs)
                     {
-                        Native.fff_free_grep_result(payload);
+                        break;
                     }
+
+                    fileOffset = result.NextFileOffset;
                 }
+
+                return new GrepResult(matches, fallbackError);
             },
             cancellationToken);
+    }
+
+    /// <summary>
+    /// A single grep page starting at <paramref name="fileOffset"/>, searching at most
+    /// <paramref name="filePageLimit"/> files. Used by <see cref="SymbolIndex"/> to sweep the
+    /// whole workspace; most callers want <see cref="GrepAsync"/>.
+    /// </summary>
+    public Task<GrepPage> GrepPageAsync(
+        string query, GrepMode mode, uint fileOffset, uint filePageLimit, CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfZero(filePageLimit);
+
+        return Task.Run(
+            () =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return GrepPageCore(query, mode, fileOffset, filePageLimit);
+            },
+            cancellationToken);
+    }
+
+    private GrepPage GrepPageCore(string query, GrepMode mode, uint fileOffset, uint filePageLimit)
+    {
+        lock (gate)
+        {
+            ThrowIfNotStartedCore();
+
+            IntPtr result = CallWithWatchdog("live_grep", () => Native.fff_live_grep(
+                handle,
+                query,
+                (byte)mode,
+                maxFileSize: 0,
+                maxMatchesPerFile: 0,
+                smartCase: true,
+                fileOffset: fileOffset,
+                pageLimit: filePageLimit,
+                timeBudgetMs: 0,
+                beforeContext: 0,
+                afterContext: 0,
+                classifyDefinitions: true));
+            IntPtr payload = UnwrapResult(result, "live_grep");
+            try
+            {
+                string? fallbackError = PtrToString(Native.fff_grep_result_get_regex_fallback_error(payload));
+                if (fallbackError is not null)
+                {
+                    SeekyLog.Info($"fff live_grep: regex fallback: {fallbackError}");
+                }
+
+                uint count = Native.fff_grep_result_get_count(payload);
+                var matches = new List<GrepMatch>((int)count);
+                for (uint i = 0; i < count; i++)
+                {
+                    IntPtr match = Native.fff_grep_result_get_match(payload, i);
+                    if (match == IntPtr.Zero)
+                    {
+                        continue;
+                    }
+
+                    string? path = PtrToString(Native.fff_grep_match_get_relative_path(match));
+                    if (path is null)
+                    {
+                        continue;
+                    }
+
+                    string text = PtrToString(Native.fff_grep_match_get_line_content(match)) ?? string.Empty;
+
+                    // is_definition is read but never trusted: fff_c.dll v0.10.1 reports false for
+                    // every match, including its own documented cases ('class Foo', 'fn bar').
+                    // SymbolClassifier does the real classification — see SymbolIndex.
+                    matches.Add(new GrepMatch(
+                        path,
+                        checked((int)Native.fff_grep_match_get_line_number(match)),
+                        text,
+                        (int)Native.fff_grep_match_get_col(match),
+                        ReadMatchRanges(match, text),
+                        PtrToString(Native.fff_grep_match_get_git_status(match)),
+                        Native.fff_grep_match_get_is_binary(match),
+                        Native.fff_grep_match_get_is_definition(match)));
+                }
+
+                return new GrepPage(
+                    matches,
+                    fallbackError,
+                    Native.fff_grep_result_get_next_file_offset(payload),
+                    Native.fff_grep_result_get_total_files(payload));
+            }
+            finally
+            {
+                Native.fff_free_grep_result(payload);
+            }
+        }
     }
 
     /// <summary>
@@ -811,6 +889,12 @@ internal sealed partial class FffNativeClient : IDisposable
 
         [LibraryImport(LibraryName)]
         internal static partial IntPtr fff_grep_result_get_regex_fallback_error(IntPtr result);
+
+        [LibraryImport(LibraryName)]
+        internal static partial uint fff_grep_result_get_next_file_offset(IntPtr result);
+
+        [LibraryImport(LibraryName)]
+        internal static partial uint fff_grep_result_get_total_files(IntPtr result);
 
         [LibraryImport(LibraryName)]
         internal static partial IntPtr fff_grep_match_get_relative_path(IntPtr match);
