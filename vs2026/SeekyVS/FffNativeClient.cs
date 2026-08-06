@@ -11,6 +11,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using static SeekyVS.SymbolIndex;
 
 /// <summary>
 /// Search backend over the native fff C FFI library (<c>Tools/fff_c.dll</c>) — replaces the
@@ -40,12 +41,28 @@ internal sealed partial class FffNativeClient : IDisposable
     private const int MaxGrepPages = 400;
     private const int GrepBudgetMs = 3_000;
 
+    private static readonly System.Threading.Lock ResolverLock = new();
     private static bool resolverInstalled;
 
-    private readonly System.Threading.Lock gate = new();
+    /// <summary>
+    /// Serializes every native call. A <see cref="SemaphoreSlim"/> rather than a <c>lock</c> so
+    /// waiters can be awaited and cancelled: searches run per keystroke while the symbol sweep
+    /// can hold the gate for seconds at a time, and blocking pool threads on that is how you
+    /// starve the thread pool under typing.
+    /// </summary>
+    private readonly SemaphoreSlim gate = new(1, 1);
+
     private IntPtr handle;
     private string? workspaceDir;
     private bool scanWaitCompleted;
+    private int disposed;
+
+    /// <summary>
+    /// Bumped whenever the underlying index is replaced (<c>fff_restart_index</c>). Paged
+    /// operations capture it and abort if it moves: a <c>file_offset</c> from the previous index
+    /// means nothing to the new one, so continuing would silently skip or repeat files.
+    /// </summary>
+    private int workspaceGeneration;
 
     /// <summary>Grep sub-mode for <c>fff_live_grep</c> (0 = plain SIMD, 1 = regex, 2 = fuzzy).</summary>
     internal enum GrepMode : byte
@@ -68,7 +85,7 @@ internal sealed partial class FffNativeClient : IDisposable
     /// provides no ranges.
     /// </summary>
     internal readonly record struct GrepMatch(
-        string Path, int Line, string Text, int Col, (int Start, int End)[] Ranges,
+        string Path, int Line, string Text, int Col, SeekyRange[] Ranges,
         string? GitStatus, bool IsBinary, bool IsDefinition);
 
     /// <summary>Grep results plus the regex-fallback notice, if any.</summary>
@@ -86,16 +103,26 @@ internal sealed partial class FffNativeClient : IDisposable
     /// restarts the index when the workspace changed, no-ops otherwise. Waits for the initial
     /// scan to finish and reports progress through <paramref name="reportStatus"/>.
     /// </summary>
+    /// <remarks>
+    /// <paramref name="reportStatus"/> is invoked while the gate is held — it must not call back
+    /// into this client or block on the UI thread.
+    /// </remarks>
     public Task StartAsync(string dir, Action<string>? reportStatus, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(dir);
+        ThrowIfDisposed();
 
         return Task.Run(
-            () =>
+            async () =>
             {
-                lock (gate)
+                await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
                 {
                     EnsureInstanceCore(dir, reportStatus, cancellationToken);
+                }
+                finally
+                {
+                    gate.Release();
                 }
             },
             cancellationToken);
@@ -106,15 +133,21 @@ internal sealed partial class FffNativeClient : IDisposable
     public Task<IReadOnlyList<FileItem>> FindFilesAsync(string query, string? currentFile, int maxResults, CancellationToken cancellationToken)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxResults);
+        ThrowIfDisposed();
 
         return Task.Run<IReadOnlyList<FileItem>>(
-            () =>
+            async () =>
             {
-                lock (gate)
+                await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     ThrowIfNotStartedCore();
                     return SearchFilesCore(query, currentFile, maxResults, useGlob: false);
+                }
+                finally
+                {
+                    gate.Release();
                 }
             },
             cancellationToken);
@@ -124,11 +157,13 @@ internal sealed partial class FffNativeClient : IDisposable
     public Task<IReadOnlyList<DirItem>> FindDirectoriesAsync(string query, string? currentFile, int maxResults, CancellationToken cancellationToken)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxResults);
+        ThrowIfDisposed();
 
         return Task.Run<IReadOnlyList<DirItem>>(
-            () =>
+            async () =>
             {
-                lock (gate)
+                await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     ThrowIfNotStartedCore();
@@ -167,6 +202,10 @@ internal sealed partial class FffNativeClient : IDisposable
                         Native.fff_free_dir_search_result(payload);
                     }
                 }
+                finally
+                {
+                    gate.Release();
+                }
             },
             cancellationToken);
     }
@@ -177,10 +216,13 @@ internal sealed partial class FffNativeClient : IDisposable
     /// </summary>
     public Task<IReadOnlyList<string>> GetHistoryAsync(int max, CancellationToken cancellationToken)
     {
+        ThrowIfDisposed();
+
         return Task.Run<IReadOnlyList<string>>(
-            () =>
+            async () =>
             {
-                lock (gate)
+                await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
                 {
                     var queries = new List<string>();
                     if (handle == IntPtr.Zero)
@@ -215,6 +257,10 @@ internal sealed partial class FffNativeClient : IDisposable
 
                     return (IReadOnlyList<string>)queries;
                 }
+                finally
+                {
+                    gate.Release();
+                }
             },
             cancellationToken);
     }
@@ -228,11 +274,13 @@ internal sealed partial class FffNativeClient : IDisposable
     public Task<IReadOnlyList<FileItem>> GitModifiedAsync(string query, int maxResults, CancellationToken cancellationToken)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxResults);
+        ThrowIfDisposed();
 
         return Task.Run<IReadOnlyList<FileItem>>(
-            () =>
+            async () =>
             {
-                lock (gate)
+                await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     ThrowIfNotStartedCore();
@@ -244,10 +292,13 @@ internal sealed partial class FffNativeClient : IDisposable
                         items = SearchFilesCore("*", null, maxResults, useGlob: true);
                     }
 
-                    return (IReadOnlyList<FileItem>)items
+                    return [.. items
                         .Where(f => !string.IsNullOrEmpty(f.GitStatus))
-                        .Take(maxResults)
-                        .ToList();
+                        .Take(maxResults)];
+                }
+                finally
+                {
+                    gate.Release();
                 }
             },
             cancellationToken);
@@ -256,12 +307,15 @@ internal sealed partial class FffNativeClient : IDisposable
     /// <summary>Asks fff to refresh its git-status cache (best-effort; logs the update count).</summary>
     public Task RefreshGitStatusAsync(CancellationToken cancellationToken)
     {
+        ThrowIfDisposed();
+
         return Task.Run(
-            () =>
+            async () =>
             {
                 try
                 {
-                    lock (gate)
+                    await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    try
                     {
                         if (handle == IntPtr.Zero)
                         {
@@ -271,6 +325,10 @@ internal sealed partial class FffNativeClient : IDisposable
                         IntPtr result = Native.fff_refresh_git_status(handle);
                         _ = UnwrapResult(result, "refresh_git_status", out long updated);
                         SeekyLog.Info($"fff refresh_git_status: {updated} files updated");
+                    }
+                    finally
+                    {
+                        gate.Release();
                     }
                 }
                 catch (Exception ex)
@@ -326,14 +384,16 @@ internal sealed partial class FffNativeClient : IDisposable
     public Task<GrepResult> GrepAsync(string query, GrepMode mode, int maxResults, CancellationToken cancellationToken)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxResults);
+        ThrowIfDisposed();
 
         return Task.Run(
-            () =>
+            async () =>
             {
                 var matches = new List<GrepMatch>(maxResults);
                 string? fallbackError = null;
                 uint fileOffset = 0;
                 var stopwatch = Stopwatch.StartNew();
+                int generation = Volatile.Read(ref workspaceGeneration);
 
                 // fff's page_limit counts FILES SEARCHED, not matches: a single call stops after
                 // page_limit files and reports where to resume. Passing maxResults straight
@@ -342,7 +402,27 @@ internal sealed partial class FffNativeClient : IDisposable
                 for (int page = 0; page < MaxGrepPages; page++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    GrepPage result = GrepPageCore(query, mode, fileOffset, c_FilePageLimit);
+
+                    GrepPage result;
+                    await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    try
+                    {
+                        // The gate is released between pages, so the workspace can be swapped
+                        // mid-sweep; a file_offset from the old index would then address the
+                        // wrong files. Abandon what we have rather than return a mixture.
+                        if (Volatile.Read(ref workspaceGeneration) != generation)
+                        {
+                            SeekyLog.Info($"fff grep: workspace changed mid-sweep after {page} page(s); discarding");
+                            return new GrepResult([], fallbackError);
+                        }
+
+                        result = GrepPageCore(query, mode, fileOffset, c_FilePageLimit);
+                    }
+                    finally
+                    {
+                        gate.Release();
+                    }
+
                     fallbackError ??= result.RegexFallbackError;
                     foreach (GrepMatch match in result.Matches)
                     {
@@ -375,102 +455,133 @@ internal sealed partial class FffNativeClient : IDisposable
         string query, GrepMode mode, uint fileOffset, uint filePageLimit, CancellationToken cancellationToken)
     {
         ArgumentOutOfRangeException.ThrowIfZero(filePageLimit);
+        ThrowIfDisposed();
 
         return Task.Run(
-            () =>
+            async () =>
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                return GrepPageCore(query, mode, fileOffset, filePageLimit);
+                await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    return GrepPageCore(query, mode, fileOffset, filePageLimit);
+                }
+                finally
+                {
+                    gate.Release();
+                }
             },
             cancellationToken);
     }
 
+    /// <summary>
+    /// The current index generation, for callers that page across multiple
+    /// <see cref="GrepPageAsync"/> calls (see <see cref="SymbolIndex"/>): capture it before the
+    /// first page and re-check it after each one, because a <c>file_offset</c> is only meaningful
+    /// against the index that produced it.
+    /// </summary>
+    public int WorkspaceGeneration => Volatile.Read(ref workspaceGeneration);
+
+    /// <summary>Caller must hold <see cref="gate"/>.</summary>
     private GrepPage GrepPageCore(string query, GrepMode mode, uint fileOffset, uint filePageLimit)
     {
-        lock (gate)
+        ThrowIfNotStartedCore();
+
+        IntPtr result = CallWithWatchdog("live_grep", () => Native.fff_live_grep(
+            handle,
+            query,
+            (byte)mode,
+            maxFileSize: 0,
+            maxMatchesPerFile: 0,
+            smartCase: true,
+            fileOffset: fileOffset,
+            pageLimit: filePageLimit,
+            timeBudgetMs: 0,
+            beforeContext: 0,
+            afterContext: 0,
+            classifyDefinitions: true));
+        IntPtr payload = UnwrapResult(result, "live_grep");
+        try
         {
-            ThrowIfNotStartedCore();
-
-            IntPtr result = CallWithWatchdog("live_grep", () => Native.fff_live_grep(
-                handle,
-                query,
-                (byte)mode,
-                maxFileSize: 0,
-                maxMatchesPerFile: 0,
-                smartCase: true,
-                fileOffset: fileOffset,
-                pageLimit: filePageLimit,
-                timeBudgetMs: 0,
-                beforeContext: 0,
-                afterContext: 0,
-                classifyDefinitions: true));
-            IntPtr payload = UnwrapResult(result, "live_grep");
-            try
+            string? fallbackError = PtrToString(Native.fff_grep_result_get_regex_fallback_error(payload));
+            if (fallbackError is not null)
             {
-                string? fallbackError = PtrToString(Native.fff_grep_result_get_regex_fallback_error(payload));
-                if (fallbackError is not null)
+                SeekyLog.Info($"fff live_grep: regex fallback: {fallbackError}");
+            }
+
+            uint count = Native.fff_grep_result_get_count(payload);
+            var matches = new List<GrepMatch>((int)count);
+            for (uint i = 0; i < count; i++)
+            {
+                IntPtr match = Native.fff_grep_result_get_match(payload, i);
+                if (match == IntPtr.Zero)
                 {
-                    SeekyLog.Info($"fff live_grep: regex fallback: {fallbackError}");
+                    continue;
                 }
 
-                uint count = Native.fff_grep_result_get_count(payload);
-                var matches = new List<GrepMatch>((int)count);
-                for (uint i = 0; i < count; i++)
+                string? path = PtrToString(Native.fff_grep_match_get_relative_path(match));
+                if (path is null)
                 {
-                    IntPtr match = Native.fff_grep_result_get_match(payload, i);
-                    if (match == IntPtr.Zero)
-                    {
-                        continue;
-                    }
-
-                    string? path = PtrToString(Native.fff_grep_match_get_relative_path(match));
-                    if (path is null)
-                    {
-                        continue;
-                    }
-
-                    string text = PtrToString(Native.fff_grep_match_get_line_content(match)) ?? string.Empty;
-
-                    // is_definition is read but never trusted: fff_c.dll v0.10.1 reports false for
-                    // every match, including its own documented cases ('class Foo', 'fn bar').
-                    // SymbolClassifier does the real classification — see SymbolIndex.
-                    matches.Add(new GrepMatch(
-                        path,
-                        checked((int)Native.fff_grep_match_get_line_number(match)),
-                        text,
-                        (int)Native.fff_grep_match_get_col(match),
-                        ReadMatchRanges(match, text),
-                        PtrToString(Native.fff_grep_match_get_git_status(match)),
-                        Native.fff_grep_match_get_is_binary(match),
-                        Native.fff_grep_match_get_is_definition(match)));
+                    continue;
                 }
 
-                return new GrepPage(
-                    matches,
-                    fallbackError,
-                    Native.fff_grep_result_get_next_file_offset(payload),
-                    Native.fff_grep_result_get_total_files(payload));
+                string text = PtrToString(Native.fff_grep_match_get_line_content(match)) ?? string.Empty;
+
+                // is_definition is read but never trusted: fff_c.dll v0.10.1 reports false for
+                // every match, including its own documented cases ('class Foo', 'fn bar').
+                // SymbolClassifier does the real classification — see SymbolIndex.
+                matches.Add(new GrepMatch(
+                    path,
+                    checked((int)Native.fff_grep_match_get_line_number(match)),
+                    text,
+                    (int)Native.fff_grep_match_get_col(match),
+                    ReadMatchRanges(match, text),
+                    PtrToString(Native.fff_grep_match_get_git_status(match)),
+                    Native.fff_grep_match_get_is_binary(match),
+                    Native.fff_grep_match_get_is_definition(match)));
             }
-            finally
-            {
-                Native.fff_free_grep_result(payload);
-            }
+
+            return new GrepPage(
+                matches,
+                fallbackError,
+                Native.fff_grep_result_get_next_file_offset(payload),
+                Native.fff_grep_result_get_total_files(payload));
+        }
+        finally
+        {
+            Native.fff_free_grep_result(payload);
         }
     }
 
     /// <summary>
-    /// Wraps a native call with a hang detector: if the call is still running after 5s a
-    /// WATCHDOG line is logged (a hung fff call otherwise looks identical to "no results").
-    /// Slow-but-finished calls over 1s are logged too.
+    /// Wraps a native call with a hang detector: while the call is still running a WATCHDOG line
+    /// is logged every 5s (a hung fff call otherwise looks identical to "no results").
+    /// Slow-but-finished calls over 1s are logged once, on completion.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The timer is <b>periodic</b>, not one-shot: a wedged call keeps reporting (5s, 10s, 15s…)
+    /// so the log shows it is still stuck rather than leaving a single line and silence.
+    /// </para>
+    /// <para>
+    /// Deliberately a <see cref="Timer"/> and not <see cref="PeriodicTimer"/>. This wraps every
+    /// native entry point — ~130 <c>live_grep</c> calls per symbol sweep plus one per keystroke —
+    /// so it must stay allocation-cheap, and <c>PeriodicTimer</c> would need a task plus a
+    /// completion handshake per call. Exceptions from the callback are swallowed by the timer, by
+    /// design: a hang <i>detector</i> must never be able to fail the call it is watching, and
+    /// rethrowing from a <c>finally</c> here would replace a real fff error with a logging error.
+    /// </para>
+    /// </remarks>
     private static IntPtr CallWithWatchdog(string name, Func<IntPtr> call)
     {
-        using var hangTimer = new System.Threading.Timer(
-            _ => SeekyLog.Info($"WATCHDOG: fff {name} still running after 5s (possible native hang)"),
-            null,
-            5000,
-            Timeout.Infinite);
         var stopwatch = Stopwatch.StartNew();
+        using var hangTimer = new Timer(
+            _ => SeekyLog.Info(
+                $"WATCHDOG: fff {name} still running after {stopwatch.ElapsedMilliseconds}ms (possible native hang)"),
+            null,
+            dueTime: 5000,
+            period: 5000);
+
         IntPtr result = call();
         if (stopwatch.ElapsedMilliseconds > 1000)
         {
@@ -486,12 +597,15 @@ internal sealed partial class FffNativeClient : IDisposable
     /// </summary>
     public Task TrackQueryAsync(string query, string relativePath, CancellationToken cancellationToken)
     {
+        ThrowIfDisposed();
+
         return Task.Run(
-            () =>
+            async () =>
             {
                 try
                 {
-                    lock (gate)
+                    await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    try
                     {
                         if (handle == IntPtr.Zero)
                         {
@@ -501,6 +615,10 @@ internal sealed partial class FffNativeClient : IDisposable
                         IntPtr result = Native.fff_track_query(handle, query, relativePath);
                         _ = UnwrapResult(result, "track_query", out long ok);
                         SeekyLog.Info($"fff track_query('{query}', '{relativePath}'): {(ok == 1 ? "ok" : "failed")}");
+                    }
+                    finally
+                    {
+                        gate.Release();
                     }
                 }
                 catch (Exception ex)
@@ -512,9 +630,23 @@ internal sealed partial class FffNativeClient : IDisposable
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Waits for the in-flight native call to finish before destroying the instance — freeing the
+    /// handle underneath a running <c>fff_*</c> call would fault in native code. The gate itself
+    /// is deliberately NOT disposed: a queued waiter would then throw
+    /// <see cref="ObjectDisposedException"/> from <c>WaitAsync</c> instead of the clean
+    /// <c>ThrowIfDisposed</c>/no-op path, and a bare <see cref="SemaphoreSlim"/> holds nothing
+    /// worth reclaiming.
+    /// </remarks>
     public void Dispose()
     {
-        lock (gate)
+        if (Interlocked.Exchange(ref disposed, 1) != 0)
+        {
+            return;
+        }
+
+        gate.Wait();
+        try
         {
             if (handle != IntPtr.Zero)
             {
@@ -523,9 +655,16 @@ internal sealed partial class FffNativeClient : IDisposable
                 handle = IntPtr.Zero;
                 workspaceDir = null;
                 scanWaitCompleted = false;
+                Interlocked.Increment(ref workspaceGeneration);
             }
         }
+        finally
+        {
+            gate.Release();
+        }
     }
+
+    private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
 
     // ------------------------------------------------------------------ instance lifecycle
 
@@ -552,6 +691,9 @@ internal sealed partial class FffNativeClient : IDisposable
             UnwrapResult(restartResult, "restart_index");
             workspaceDir = dir;
             scanWaitCompleted = false;
+
+            // Any file_offset held by an in-flight paged sweep now refers to the old index.
+            Interlocked.Increment(ref workspaceGeneration);
         }
         else if (handle == IntPtr.Zero)
         {
@@ -665,13 +807,12 @@ internal sealed partial class FffNativeClient : IDisposable
     /// <summary>
     /// Reads a grep match's highlight spans. Native <c>FffMatchRange</c> values are BYTE offsets
     /// into the UTF-8 line, but the page works in UTF-16 char indices: the line is re-encoded
-    /// to UTF-8 and each byte offset is mapped by decoding the prefix
-    /// (<c>Encoding.UTF8.GetCharCount</c>). Offsets are clamped defensively (including
-    /// mid-multibyte cuts and swapped ends); degenerate spans are dropped. The returned ranges
-    /// borrow from the parent <c>FffGrepResult</c> — call only while it is alive; there is no
-    /// separate free for them.
+    /// to UTF-8 once and converted to a byte-offset→UTF-16-prefix table to avoid repeated
+    /// decoding work. Offsets are clamped defensively (including mid-multibyte cuts and
+    /// swapped ends); degenerate spans are dropped. The returned ranges borrow from the parent
+    /// <c>FffGrepResult</c> — call only while it is alive; there is no separate free for them.
     /// </summary>
-    private static (int Start, int End)[] ReadMatchRanges(IntPtr match, string lineText)
+    private static SeekyRange[] ReadMatchRanges(IntPtr match, string lineText)
     {
         uint count = Native.fff_grep_match_get_match_ranges_count(match);
         if (count == 0 || lineText.Length == 0)
@@ -680,7 +821,10 @@ internal sealed partial class FffNativeClient : IDisposable
         }
 
         byte[] utf8 = Encoding.UTF8.GetBytes(lineText);
-        var ranges = new List<(int Start, int End)>((int)count);
+        ReadOnlySpan<byte> utf8Span = utf8;
+        int[] prefixUtf16Counts = BuildUtf16PrefixCounts(utf8Span);
+        //var ranges = new List<(int Start, int End)>((int)count);
+        var ranges = new List<SeekyRange>((int)count);
         for (uint i = 0; i < count; i++)
         {
             IntPtr rangePtr = Native.fff_grep_match_get_match_range(match, i);
@@ -697,15 +841,63 @@ internal sealed partial class FffNativeClient : IDisposable
                 (startByte, endByte) = (endByte, startByte);
             }
 
-            int start = Encoding.UTF8.GetCharCount(utf8, 0, startByte);
-            int end = Encoding.UTF8.GetCharCount(utf8, 0, endByte);
+            int start = prefixUtf16Counts[Math.Min(startByte, prefixUtf16Counts.Length - 1)];
+            int end = prefixUtf16Counts[Math.Min(endByte, prefixUtf16Counts.Length - 1)];
             if (end > start)
             {
-                ranges.Add((start, end));
+                //ranges.Add((start, end));
+                ranges.Add(new SeekyRange(start,end));
             }
         }
 
         return [.. ranges];
+    }
+
+    private static int[] BuildUtf16PrefixCounts(ReadOnlySpan<byte> utf8)
+    {
+        var prefixCounts = new int[utf8.Length + 1];
+        int utf16Count = 0;
+        int byteOffset = 0;
+
+        while (byteOffset < utf8.Length)
+        {
+            prefixCounts[byteOffset] = utf16Count;
+            int sequenceLength = GetUtf8SequenceLength(utf8[byteOffset]);
+            for (int offsetInSequence = 1; offsetInSequence < sequenceLength; offsetInSequence++)
+            {
+                int nextByteOffset = byteOffset + offsetInSequence;
+                if (nextByteOffset <= utf8.Length)
+                {
+                    prefixCounts[nextByteOffset] = utf16Count;
+                }
+            }
+
+            utf16Count++;
+            byteOffset += sequenceLength;
+        }
+
+        prefixCounts[utf8.Length] = utf16Count;
+        return prefixCounts;
+    }
+
+    private static int GetUtf8SequenceLength(byte leadingByte)
+    {
+        if ((leadingByte & 0x80) == 0)
+        {
+            return 1;
+        }
+
+        if ((leadingByte & 0xE0) == 0xC0)
+        {
+            return 2;
+        }
+
+        if ((leadingByte & 0xF0) == 0xE0)
+        {
+            return 3;
+        }
+
+        return 4;
     }
 
     // ------------------------------------------------------------------ helpers
@@ -750,27 +942,40 @@ internal sealed partial class FffNativeClient : IDisposable
     // WebView2Loader resolver: resolve fff_c.dll relative to the extension assembly.
     private static void EnsureResolver()
     {
-        if (resolverInstalled)
+        if (Volatile.Read(ref resolverInstalled))
         {
             return;
         }
 
-        resolverInstalled = true;
-        string extensionDir = Path.GetDirectoryName(typeof(FffNativeClient).Assembly.Location)
-            ?? AppContext.BaseDirectory;
-        string libraryPath = Path.Combine(extensionDir, "Tools", LibraryName);
-        SeekyLog.Info($"fff loader path: {libraryPath} (exists: {File.Exists(libraryPath)})");
-
-        NativeLibrary.SetDllImportResolver(typeof(FffNativeClient).Assembly, (name, _, _) =>
+        // The flag is set AFTER the resolver is installed, under a lock. Setting it first (as
+        // this did) lets a second caller skip the wait and P/Invoke before the resolver exists,
+        // which surfaces as DllNotFoundException for fff_c.dll. Callers are serialized by the
+        // instance gate today, so this is hardening rather than a live bug.
+        lock (ResolverLock)
         {
-            if (string.Equals(name, LibraryName, StringComparison.OrdinalIgnoreCase)
-                && File.Exists(libraryPath))
+            if (resolverInstalled)
             {
-                return NativeLibrary.Load(libraryPath);
+                return;
             }
 
-            return IntPtr.Zero; // default resolution for everything else (user32 etc.)
-        });
+            string extensionDir = Path.GetDirectoryName(typeof(FffNativeClient).Assembly.Location)
+                ?? AppContext.BaseDirectory;
+            string libraryPath = Path.Combine(extensionDir, "Tools", LibraryName);
+            SeekyLog.Info($"fff loader path: {libraryPath} (exists: {File.Exists(libraryPath)})");
+
+            NativeLibrary.SetDllImportResolver(typeof(FffNativeClient).Assembly, (name, _, _) =>
+            {
+                if (string.Equals(name, LibraryName, StringComparison.OrdinalIgnoreCase)
+                    && File.Exists(libraryPath))
+                {
+                    return NativeLibrary.Load(libraryPath);
+                }
+
+                return IntPtr.Zero; // default resolution for everything else (user32 etc.)
+            });
+
+            Volatile.Write(ref resolverInstalled, true);
+        }
     }
 
     // ------------------------------------------------------------------ native bindings

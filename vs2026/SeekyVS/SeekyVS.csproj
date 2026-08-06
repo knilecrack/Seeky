@@ -11,7 +11,7 @@
     <AssemblyName>SeekyVS</AssemblyName>
     <!-- VSIX identity version (flows via ExtensionAssemblyVersion into the manifest) —
          bump on every release so VS offers the update. -->
-    <Version>1.5.0</Version>
+    <Version>1.6.0</Version>
     <!-- LibraryImport source-generated P/Invoke (FffNativeClient) requires unsafe code. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- The windows10.0.19041.0 TFM implicitly references the C#/WinRT projection
@@ -52,4 +52,29 @@
   <ItemGroup>
     <Content Include="Tools\fff_c.dll" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+
+  <!--
+    Ship SeekyVS.pdb inside the VSIX for Debug builds. F5 deploys by unzipping the VSIX, and
+    VSSDK defaults IncludeDebugSymbolsInVSIXContainer to false, so the deployed extension had no
+    symbols: the debugger attached, reported "you are debugging a Release build", and could not
+    bind breakpoints — even though the assembly really was Debug (DebuggableAttribute = 263,
+    optimizations off). IncludeDebugSymbolsInLocalVSIXDeployment is already true by default, but
+    it only covers VSSDK's own local-deploy path, which this project type does not use.
+  -->
+  <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
+    <IncludeDebugSymbolsInVSIXContainer>true</IncludeDebugSymbolsInVSIXContainer>
+  </PropertyGroup>
+
+  <!--
+    Do NOT set DeployExtension=true here. The Extensibility SDK deliberately defaults it to false
+    (VSSDK's own default is true) because the VSSDK deploy path is the VS 17 mechanism and cannot
+    deploy an out-of-proc VS 2026 extension: its GetExtensionsPath task resolves the legacy
+    <hive>\Extensions root rather than the <hive>\VSExtensions root this SDK declares in
+    ExtensionInstallationRoot, and its EnableExtension task (FailIfNotInstalled="true") only knows
+    the legacy Extension Manager. Turning it on gives you a choice of two failures: deploy into a
+    directory VS never reads, or — if the path is redirected to VSExtensions — error VSSDK1031,
+    "Extension … could not be found", from EnableExtension. Both were measured on VS 18.9.
+    Deployment for this project is the project system's job (the .slnx carries <Deploy Solution=
+    "Debug|*" />), not VSSDK's.
+  -->
 </Project>

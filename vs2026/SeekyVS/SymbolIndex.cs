@@ -268,9 +268,20 @@ internal static class SymbolIndex
         uint totalFiles = 0;
         int scannedLines = 0;
 
+        // A file offset only means anything against the index that produced it. This sweep spans
+        // many calls, so a workspace change partway through would silently address the wrong
+        // files from that point on — start over instead.
+        int generation = client.WorkspaceGeneration;
+
         for (int page = 0; page < MaxPages; page++)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (client.WorkspaceGeneration != generation)
+            {
+                SeekyLog.Info($"Symbol sweep: workspace changed after {page} page(s); abandoning the partial index");
+                return [];
+            }
+
             FffNativeClient.GrepPage result = await client.GrepPageAsync(
                 SweepPattern,
                 FffNativeClient.GrepMode.Regex,

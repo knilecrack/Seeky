@@ -18,9 +18,18 @@ public class SeekyVSExtension : Extension
     /// Initializes a new instance of the <see cref="SeekyVSExtension"/> class. This is the earliest
     /// hook we get — its log line proves the extension assembly loaded in the out-of-proc host.
     /// </summary>
+    /// <remarks>
+    /// The assembly location is logged here, not just in the fff/WebUI paths, because those are
+    /// only written once the picker is first opened: a load that never shows the popup left no
+    /// record of WHERE it loaded from, which made "did F5 actually deploy?" unanswerable from the
+    /// log alone. This line answers it on every load.
+    /// </remarks>
     public SeekyVSExtension()
     {
         SeekyLog.Info($"SeekyVSExtension ctor — extension loaded (pid {Environment.ProcessId}, process '{Process.GetCurrentProcess().ProcessName}')");
+        SeekyLog.Info($"  loaded from: {typeof(SeekyVSExtension).Assembly.Location}");
+        SeekyLog.Info($"  build: {typeof(SeekyVSExtension).Assembly.GetName().Version} " +
+            $"({(System.Diagnostics.Debugger.IsAttached ? "debugger attached" : "no debugger")})");
 
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
             SeekyLog.Error("AppDomain unhandled exception", e.ExceptionObject as Exception ?? new Exception(Convert.ToString(e.ExceptionObject)));
