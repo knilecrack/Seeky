@@ -405,13 +405,79 @@ dotnet build -c Release
 
 Requires only a .NET SDK (8+; repo pins 10.0.302 via `global.json`). No Visual Studio needed.
 
+## Installing (daily use) — VSIXInstaller does NOT work
+
+**`VSIXInstaller.exe` cannot install this extension.** It fails with:
+
+> `Cannot install a VisualStudio.Extensibility extension using the install call. Must unzip and
+> call the finalizer instead.`
+
+Out-of-proc VS 2026 extensions are installed by unzipping the VSIX into the target hive and
+registering it with `Microsoft.VisualStudio.Extensibility.Finalizer.exe` — which is exactly what
+VS's own Deploy does (watch the Output → Build pane during F5). The finalizer's flags decide the
+**scope**, and scope is what determines whether your daily copy and F5 collide:
+
+| finalizer flag | installs into | notes |
+| --- | --- | --- |
+| *(none)* | `%LOCALAPPDATA%\…\18.0_<id>\VSExtensions` | main instance — **use this for daily use** |
+| `--RootSuffix Exp` | `…\18.0_<id>Exp\VSExtensions` | experimental hive — **F5 owns this; it wipes it** |
+| `--PerMachine` | `<VS install>\Common7\IDE\VSExtensions` | install-scoped: loads into **every** hive |
+
+`--PerMachine` is the trap. An install-scoped copy loads into every instance *including* the
+experimental one and outranks the hive-scoped copy F5 registers, so it silently shadows the build
+you are debugging — with no error anywhere. Running `VSIXInstaller /admin` (or elevated) lands
+here. Never install this extension per-machine while developing it.
+
+Install for daily use — **close all VS instances first, and do not elevate**:
+
+```powershell
+$version = '1.6.0.0'                       # must match <Version> in SeekyVS.csproj
+$instance = 'cfa335b4'                     # see: vswhere -prerelease -all -format json
+$ide  = 'C:\Program Files\Microsoft Visual Studio\18\Insiders\Common7\IDE'
+$vsix = "O:\repos\knilecrack\Seeky\vs2026\SeekyVS\bin\Release\net10.0-windows10.0.19041.0\SeekyVS.vsix"
+$dest = "$env:LOCALAPPDATA\Microsoft\VisualStudio\18.0_$instance\VSExtensions\knilecrack\Seeky\$version"
+
+if (Get-Process devenv -ErrorAction SilentlyContinue) { throw 'Close Visual Studio first.' }
+if ([IO.Directory]::Exists($dest)) { [IO.Directory]::Delete($dest, $true) }
+[IO.Directory]::CreateDirectory($dest) | Out-Null
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+[IO.Compression.ZipFile]::ExtractToDirectory($vsix, $dest)
+
+& "$ide\Microsoft.VisualStudio.Extensibility.Finalizer.exe" `
+    --ExtensionOperations "$dest;install" --InstanceId $instance
+```
+
+Uninstall is the same call with `;uninstall`. To verify scope afterwards, this must list the
+extension under the main hive and print nothing under the VS install directory:
+
+```powershell
+Get-ChildItem "$env:LOCALAPPDATA\Microsoft\VisualStudio\18.0_cfa335b4\VSExtensions\knilecrack\Seeky" -Directory
+Get-ChildItem "$ide\VSExtensions" -Directory | Where-Object Name -ne 'Microsoft'
+```
+
 ## How to run (confirmed working on VS 2026 Insiders)
 
 1. Install **Visual Studio 2026** (any edition; VS 2022 17.14+ should also work per the manifest).
    The WebView2 Runtime is already present on any machine with VS.
-2. Open `vs2026/SeekyVS.slnx`, set `SeekyVS` as startup project, press **F5** — VS deploys the
-   extension to the experimental instance and attaches the debugger.
-3. In the experimental instance: **Tools → Seeky: Open Search**.
+2. Open `vs2026/SeekyVS.slnx`, set `SeekyVS` as startup project, and set the **Debug Target**
+   (the dropdown next to the Start button) to the VS install by name — e.g. *Visual Studio
+   Community 2026 Insiders*. Do **not** pick the `SeekyVS` entry (that is a launch profile: F5
+   then runs without deploying anything) or *Current Instance* (deploys into the IDE you are
+   editing in). The choice persists in `SeekyVS.csproj.user` as `DeployTargetInstanceId`; if that
+   file is missing, F5 has no target and does nothing useful.
+3. Press **F5** — VS builds, deploys to the experimental hive, launches it, and attaches.
+4. In the experimental instance: **Tools → Seeky: Find Files / Live Grep / Symbols**.
+
+**F5 deploys a hotload, not an install.** Deploy unzips to
+`…\18.0_<id>Exp\VSExtensions\knilecrack\Seeky\<version>` and writes that path into
+`…\18.0_<id>Exp\Extensions\HotloadRegistration.txt`; the extension manager gets no registration at
+all (`privateregistry.bin` contains no trace of the extension id). Deploy also **uninstalls any
+real installation in that hive first** — so keeping a daily-use copy in the experimental hive
+means every F5 removes it. Keep daily use in the main instance (above) and leave Exp to F5.
+
+Breakpoints need `SeekyVS.pdb` inside the VSIX; VSSDK omits it by default, so the csproj sets
+`IncludeDebugSymbolsInVSIXContainer` for Debug. Without it the debugger reports "you are debugging
+a Release build" and silently binds nothing.
 
 If nothing appears at all, check `%LOCALAPPDATA%\SeekyVS\seekyvs.log` against the healthy sequence
 in "Troubleshooting / diagnostics" below — it pinpoints the failing step. (The WebView2 runtime
