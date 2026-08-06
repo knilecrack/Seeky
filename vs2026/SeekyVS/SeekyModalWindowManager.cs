@@ -79,6 +79,12 @@ internal static class SeekyModalWindowManager
     private static VisualStudioExtensibility? extensibility;
     private static IClientContext? lastClientContext;
     private static string? workspaceDir;
+
+    /// <summary>
+    /// The in-flight background workspace resolution, awaited by searches that arrive before it
+    /// finishes. Symbols mode searches the moment the popup shows, which reliably beats it.
+    /// </summary>
+    private static Task? workspaceRefresh;
     private static string requestedMode = "files";
     private static int searchGeneration;
     private static CancellationTokenSource? searchCancellation;
@@ -95,7 +101,7 @@ internal static class SeekyModalWindowManager
     {
         SeekyModalWindowManager.extensibility = extensibility;
         lastClientContext = clientContext;
-        requestedMode = mode is "files" or "grep" or "git" or "dirs" ? mode : "files";
+        requestedMode = mode is "files" or "grep" or "git" or "dirs" or "symbols" ? mode : "files";
         EnsureUiThread();
         SeekyLog.Info($"ShowAsync (mode={requestedMode}): enqueueing ShowCore on UI thread");
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -204,10 +210,11 @@ internal static class SeekyModalWindowManager
 
             // The user may have opened a different solution/folder since the last popup.
             // On the threadpool — workspace resolution does extensibility RPC (no RPC on the pump).
-            Task.Run(() => RefreshWorkspaceAsync()).Forget();
+            workspaceRefresh = Task.Run(() => RefreshWorkspaceAsync());
+        workspaceRefresh.Forget();
             PostJson(new { type = "reset" });
             PostJson(new { type = "setMode", mode = requestedMode });
-            PostJson(new { type = "setFont", fontFamily = ResolveFontFamily() });
+            PostJson(new { type = "setFont", fontFamily = ResolveFontFamily(), fontSize = ResolveFontSize() });
             Task.Run(() => PostHistoryAsync()).Forget();
             FocusPopup();
             return;
@@ -278,6 +285,21 @@ internal static class SeekyModalWindowManager
 
         coreWebView = controller.CoreWebView2;
 
+        // Chromium's accelerators are hostile to a keyboard-driven picker: Ctrl+P opens print
+        // preview and Ctrl+N a new window, which would swallow the readline-style navigation
+        // keys before the page's keydown handler ever sees them. Turning them off also kills
+        // Ctrl+F's find bar, F12, zoom and the context menu — none of which belong in a popup.
+        CoreWebView2Settings settings = coreWebView.Settings;
+        settings.AreBrowserAcceleratorKeysEnabled = false;
+        settings.AreDefaultContextMenusEnabled = false;
+        settings.AreDevToolsEnabled = false;
+        settings.IsStatusBarEnabled = false;
+
+        // Zoom stays ON: Ctrl+wheel was the only way to resize the popup's text, and disabling
+        // it took that away. Killing the accelerator keys above also took Ctrl+Plus/Minus, so
+        // the page implements those itself against "fontSize" — see the setFont message.
+        settings.IsZoomControlEnabled = true;
+
         // Serve the deployed WebUI folder over a virtual https origin (avoids file:// quirks).
         // Anchor at the extension assembly location — AppContext.BaseDirectory points at the
         // ServiceHub host's directory, not ours.
@@ -295,7 +317,7 @@ internal static class SeekyModalWindowManager
         {
             SeekyLog.Info($"DOMContentLoaded: posting setMode '{requestedMode}'");
             PostJson(new { type = "setMode", mode = requestedMode });
-            PostJson(new { type = "setFont", fontFamily = ResolveFontFamily() });
+            PostJson(new { type = "setFont", fontFamily = ResolveFontFamily(), fontSize = ResolveFontSize() });
             Task.Run(() => PostHistoryAsync()).Forget();
         };
         coreWebView.Navigate("https://seeky.vs/index.html");
@@ -303,7 +325,8 @@ internal static class SeekyModalWindowManager
 
         // Kick off the search backend in the background; status is posted to the page.
         // On the threadpool — workspace resolution does extensibility RPC (no RPC on the pump).
-        Task.Run(() => RefreshWorkspaceAsync()).Forget();
+        workspaceRefresh = Task.Run(() => RefreshWorkspaceAsync());
+        workspaceRefresh.Forget();
 
         // Grab keyboard focus so the user can type immediately (VS has focus when the command runs).
         FocusPopup();
@@ -474,6 +497,9 @@ internal static class SeekyModalWindowManager
     private const string MonoFontStack = "'Cascadia Code', Consolas, 'Courier New', monospace";
     private const string SystemFontStack = "'Segoe UI', system-ui, sans-serif";
 
+    /// <summary>Page font size in CSS px when settings.json says nothing — matches the stylesheet.</summary>
+    private const int DefaultFontSize = 13;
+
     /// <summary>
     /// Applies window chrome effects: uniform opacity from settings.json (<c>"opacity"</c>,
     /// percent 30–100, default 100) and rounded corners (Windows 11 DWM attribute, best-effort).
@@ -540,6 +566,40 @@ internal static class SeekyModalWindowManager
     /// used verbatim as a CSS font-family value after sanitizing (it is injected into an inline
     /// style). Missing/malformed/unsafe values fall back to the mono stack.
     /// </summary>
+    /// <summary>
+    /// Reads <c>"fontSize"</c> (CSS px, clamped 8–32) from settings.json; default 13 — the value
+    /// the stylesheet ships with. This is the persistent default; Ctrl+Plus/Minus adjust the
+    /// live size on the page without writing the file.
+    /// </summary>
+    private static int ResolveFontSize()
+    {
+        string settingsPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "SeekyVS",
+            "settings.json");
+        try
+        {
+            if (!File.Exists(settingsPath))
+            {
+                return DefaultFontSize;
+            }
+
+            using JsonDocument settings = JsonDocument.Parse(File.ReadAllText(settingsPath));
+            if (settings.RootElement.TryGetProperty("fontSize", out JsonElement element)
+                && element.ValueKind == JsonValueKind.Number
+                && element.TryGetInt32(out int size))
+            {
+                return Math.Clamp(size, 8, 32);
+            }
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
+        {
+            SeekyLog.Error("settings.json: unreadable fontSize", ex);
+        }
+
+        return DefaultFontSize;
+    }
+
     private static string ResolveFontFamily()
     {
         string settingsPath = Path.Combine(
@@ -619,6 +679,7 @@ internal static class SeekyModalWindowManager
             }
 
             workspaceDir = resolved;
+            SymbolIndex.Invalidate(); // symbols are workspace-relative — never serve the old set
             if (resolved is null)
             {
                 SeekyLog.Info("Workspace: no workspace open");
@@ -795,6 +856,22 @@ internal static class SeekyModalWindowManager
         var stopwatch = Stopwatch.StartNew();
         try
         {
+            // The popup posts its first search as soon as it shows, which can outrun the
+            // background workspace resolution — wait for it rather than reporting "no workspace".
+            Task? refresh = workspaceRefresh;
+            if (refresh is not null && !refresh.IsCompleted)
+            {
+                PostStatus("resolving workspace…");
+                try
+                {
+                    await refresh.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+                }
+                catch (TimeoutException)
+                {
+                    SeekyLog.Info("Search: workspace resolution did not finish within 10s");
+                }
+            }
+
             if (workspaceDir is null)
             {
                 PostStatus("no workspace open — open a solution or a file");
@@ -842,10 +919,34 @@ internal static class SeekyModalWindowManager
                             ranges = m.Ranges.Select(r => new[] { r.Start, r.End }).ToArray(),
                             gitStatus = m.GitStatus,
                             isBinary = m.IsBinary,
-                            isDefinition = m.IsDefinition,
+                            // NOT m.IsDefinition: fff_c.dll v0.10.1 reports false for every match.
+                            isDefinition = SymbolClassifier.IsDefinition(m.Path, m.Text),
                         })
                         .ToList();
                 }
+            }
+            else if (mode == "symbols")
+            {
+                // Workspace symbols: one cached sweep, fuzzy-filtered here per keystroke.
+                IReadOnlyList<SymbolIndex.Entry> symbols =
+                    await SymbolIndex.GetAsync(FffClient, workspaceDir, PostStatus, cancellationToken);
+                items = SymbolIndex.Query(symbols, query, maxResults)
+                    .Select(h => (object)new
+                    {
+                        name = h.Entry.Name,
+                        path = h.Entry.Path,
+                        line = h.Entry.Line,
+                        col = h.Entry.Col,
+                        text = h.Entry.Text,
+                        kind = h.Entry.Kind,
+                        // Spans into 'name' (not 'text') — symbol rows highlight the name.
+                        nameRanges = h.NameRanges.Select(r => new[] { r.Start, r.End }).ToArray(),
+                        ranges = Array.Empty<int[]>(),
+                        gitStatus = h.Entry.GitStatus,
+                        isBinary = h.Entry.IsBinary,
+                        isDefinition = true,
+                    })
+                    .ToList();
             }
             else if (mode == "git")
             {
@@ -1191,7 +1292,7 @@ internal static class SeekyModalWindowManager
             HInstance = hInstance,
             HIcon = IntPtr.Zero,
             HCursor = IntPtr.Zero,
-            HbrBackground = CreateSolidBrush(0x00D69C56), // COLORREF is 0x00BBGGRR — #569CD6 (VS accent blue)
+            HbrBackground = CreateSolidBrush(0x0041FF00), // COLORREF is 0x00BBGGRR — #00FF41 (phosphor green, matches the page)
             LpszMenuName = null,
             LpszClassName = WindowClassName,
             HIconSm = IntPtr.Zero,

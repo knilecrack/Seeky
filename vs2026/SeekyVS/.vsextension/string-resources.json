@@ -1,4 +1,5 @@
 {
   "SeekyVS.SeekyFindFilesCommand.DisplayName": "Seeky: Find Files",
-  "SeekyVS.SeekyLiveGrepCommand.DisplayName": "Seeky: Live Grep"
+  "SeekyVS.SeekyLiveGrepCommand.DisplayName": "Seeky: Live Grep",
+  "SeekyVS.SeekySymbolsCommand.DisplayName": "Seeky: Symbols"
 }

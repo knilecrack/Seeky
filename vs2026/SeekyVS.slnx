@@ -1,5 +1,5 @@
 <Solution>
-  <Project Path="SeekyVS/SeekyVS.csproj">
+  <Project Path="O:/repos/knilecrack/Seeky/vs2026/SeekyVS/SeekyVS.csproj">
     <Deploy Solution="Debug|*" />
   </Project>
 </Solution>
