@@ -247,6 +247,13 @@
                     { type: 'open', path, line?, directory? }   directory=true opens the folder
                                                                 in Windows Explorer
                     { type: 'close' }
+                    { type: 'resizeWindow', step }              +1 grow / -1 shrink / 0 default;
+                                                                the host owns the HWND and the
+                                                                screen metrics, so it does the math
+                    { type: 'stateChanged', fontSize, grepMode, defsOnly }
+                                                                sent whenever the user changes one
+                                                                of them; the host holds it in
+                                                                memory and writes it on close
       host -> page: { type: 'results', items, done, capped, duration }
                     items: [{ name, path, line?, col?, text?, frecency?, ranges?, kind?,
                               nameRanges?, gitStatus?, isBinary?, isDefinition?, isDirectory? }]
@@ -261,12 +268,21 @@
                     { type: 'reset' }                      clean slate each time the popup is shown
                     { type: 'setMode', mode }              sent with 'reset' when a command
                                                            shows the popup
+                    { type: 'setQuery', query }            pre-fills the prompt and searches;
+                                                           sent by Grep Word Under Cursor with the
+                                                           editor's selection or the identifier
+                                                           under the caret. Arrives after
+                                                           'setMode' — the search carries the mode
                     { type: 'history', queries }           past queries (fff track_query
                                                            history), most recent first;
                                                            ↑ in an empty prompt cycles them
-                    { type: 'setFont', fontFamily, fontSize }
-                                                           CSS font-family value + px size from
-                                                           %LOCALAPPDATA%\SeekyVS\settings.json.
+                    { type: 'setState', fontFamily, fontSize, grepMode, defsOnly }
+                                                           restored popup state. fontFamily is
+                                                           read-only (hand-edited in
+                                                           %LOCALAPPDATA%\SeekyVS\settings.json);
+                                                           the rest round-trips via 'stateChanged'
+                                                           and is saved per solution in
+                                                           <workspace>\.vs\seeky\state.json.
                                                            Ctrl+Plus/Minus adjust the live size
                                                            (the host disables Chromium's own zoom
                                                            accelerators); Ctrl+0 resets
@@ -300,7 +316,7 @@
       var previewContentEl = document.getElementById('preview-content');
       var statusEl = document.getElementById('status');
 
-      var HINT = 'Tab cycles Files/Grep/Symbols/Git · Ctrl+N/P move · Ctrl+R grep mode · Ctrl+D defs · Ctrl+±/0 size';
+      var HINT = 'Tab cycles Files/Grep/Symbols/Git · Ctrl+N/P move · Ctrl+R grep mode · Ctrl+D defs · Ctrl+±/0 font · Ctrl+Shift+±/0 window';
 
       var mode = 'files'; // 'files' | 'grep' | 'git' | 'symbols'
       var grepMode = 'fuzzy'; // 'plain' | 'regex' | 'fuzzy' (fuzzy is fff's signature mode)
@@ -327,6 +343,12 @@
         document.body.style.fontSize = fontSize + 'px';
       }
 
+      // Report what the user changed so the host can persist it. The host keeps this in memory
+      // and writes it once, on close — sending per keystroke is fine, autorepeat included.
+      function sendState() {
+        send({ type: 'stateChanged', fontSize: fontSize, grepMode: grepMode, defsOnly: defsOnly });
+      }
+
       function adjustFontSize(delta) {
         var next = clampFontSize(fontSize + delta);
         if (next === fontSize) {
@@ -334,7 +356,8 @@
         }
         fontSize = next;
         applyFontSize();
-        statusEl.textContent = 'font size ' + fontSize + 'px — Ctrl+0 resets, "fontSize" in settings.json persists';
+        sendState();
+        statusEl.textContent = 'font size ' + fontSize + 'px — Ctrl+0 resets; saved per solution on close';
         // Keep the selected row in view: changing size reflows every row's height.
         var row = rowByIndex[selected];
         if (row) {
@@ -416,10 +439,12 @@
         }
         grepMode = grepMode === 'plain' ? 'regex' : grepMode === 'regex' ? 'fuzzy' : 'plain';
         updatePromptLabel();
+        sendState();
         sendSearch();
       }
 
-      // Ctrl+D: filter grep rows to definitions only (page-side; resets on each new search).
+      // Ctrl+D: filter grep rows to definitions only (page-side). Sticky — it survives both a new
+      // search and a popup close, so a grep session stays filtered once you ask for it.
       function toggleDefsOnly() {
         if (mode !== 'grep') {
           return;
@@ -427,6 +452,7 @@
         defsOnly = !defsOnly;
         renderResults();
         updateResultStatus();
+        sendState();
       }
 
       // Indices into items[] visible under the current defsOnly filter.
@@ -716,6 +742,19 @@
         } else if (key === 'r' && e.ctrlKey) {
           e.preventDefault();
           toggleGrepMode();
+        } else if (e.ctrlKey && e.shiftKey && (key === '+' || key === '=')) {
+          // Window size lives on the host (it owns the HWND and the screen metrics), so these
+          // only send the intent. They MUST be tested before the plain-Ctrl font branches below:
+          // with Shift held, '=' arrives as '+', which those would otherwise swallow.
+          e.preventDefault();
+          send({ type: 'resizeWindow', step: 1 });
+        } else if (e.ctrlKey && e.shiftKey && (key === '-' || key === '_')) {
+          e.preventDefault();
+          send({ type: 'resizeWindow', step: -1 });
+        } else if (e.ctrlKey && e.shiftKey && (key === '0' || key === ')' || e.code === 'Digit0')) {
+          // Shift+0 is ')' on a US layout and varies elsewhere — e.code is the reliable test.
+          e.preventDefault();
+          send({ type: 'resizeWindow', step: 0 });
         } else if (e.ctrlKey && (key === '+' || key === '=')) {
           // '=' is the unshifted key on most layouts; accept both so Ctrl+= works without Shift.
           e.preventDefault();
@@ -727,6 +766,7 @@
           e.preventDefault();
           fontSize = DEFAULT_FONT_SIZE;
           applyFontSize();
+          sendState();
           updateResultStatus();
         } else if (key === 'd' && e.ctrlKey) {
           e.preventDefault();
@@ -776,7 +816,6 @@
           }
           if (message.type === 'results') {
             items = message.items || [];
-            defsOnly = false; // defs filter resets per search
             lastCapped = !!message.capped;
             lastDuration = message.duration || 0;
             selected = items.length > 0 ? 0 : -1;
@@ -812,18 +851,29 @@
             // Past queries (fff track_query history); ↑ in an empty prompt cycles them.
             history = message.queries || [];
             historyIndex = -1;
-          } else if (message.type === 'setFont') {
-            // Host-sanitized CSS font-family value (settings.json); apply to the root.
+          } else if (message.type === 'setState') {
+            // Restored on every show, and again if the workspace resolves to a different solution
+            // than the one the popup opened against.
             if (typeof message.fontFamily === 'string' && message.fontFamily.length > 0) {
               document.body.style.fontFamily = message.fontFamily;
             }
-            // Persistent default size from settings.json; Ctrl+Plus/Minus adjust from here.
             if (typeof message.fontSize === 'number' && message.fontSize > 0) {
               fontSize = clampFontSize(message.fontSize);
               applyFontSize();
             }
+            if (message.grepMode === 'plain' || message.grepMode === 'regex' || message.grepMode === 'fuzzy') {
+              grepMode = message.grepMode;
+            }
+            defsOnly = !!message.defsOnly;
+            // The prompt label carries the grep sub-mode, so it has to be redrawn here — 'setMode'
+            // follows this message and would otherwise be the only thing that refreshes it.
+            updatePromptLabel();
           } else if (message.type === 'setQuery') {
             queryEl.value = message.query || '';
+            // Selected, not just filled: the term came from the editor, so the first keystroke
+            // should replace it rather than append to it.
+            queryEl.focus();
+            queryEl.select();
             sendSearch();
           }
         });

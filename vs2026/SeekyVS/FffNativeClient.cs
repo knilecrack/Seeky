@@ -6,12 +6,10 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using static SeekyVS.SymbolIndex;
 
 /// <summary>
 /// Search backend over the native fff C FFI library (<c>Tools/fff_c.dll</c>) — replaces the
@@ -22,9 +20,11 @@ using static SeekyVS.SymbolIndex;
 /// Memory management (per crates/fff-c/include/fff.h): every call returns a heap
 /// <c>FffResult*</c> envelope freed with <c>fff_free_result</c>; the envelope does NOT own its
 /// <c>handle</c> payload — payloads are freed separately (<c>fff_free_search_result</c>,
-/// <c>fff_free_grep_result</c>, <c>fff_free_scan_progress</c>, <c>fff_destroy</c>). We pull all
-/// fields through the accessor functions (no struct marshaling except the tiny blittable
-/// <c>FffCreateOptions</c>/<c>FffScanProgress</c>), so every pointer is either freed exactly once
+/// <c>fff_free_grep_result</c>, <c>fff_free_scan_progress</c>, <c>fff_destroy</c>). Fields come
+/// through the accessor functions wherever the library exports one; the handful of structs read
+/// directly (<c>FffCreateOptions</c>, <c>FffScanProgress</c>, <c>FffMatchRange</c>,
+/// <c>FffDirItem</c>, the <c>FffDirSearchResult</c> header) are all blittable and read as plain
+/// loads via <see cref="ReadStruct{T}"/>. Every pointer is therefore either freed exactly once
 /// here or owned by the native instance. All native calls are serialized through a single gate —
 /// fff's thread-safety guarantees are undocumented, and searches are fast enough that contention
 /// is theoretical.
@@ -34,12 +34,26 @@ internal sealed partial class FffNativeClient : IDisposable
     private const string LibraryName = "fff_c.dll";
     private const uint CreateOptionsVersion = 2; // FFF_CREATE_OPTIONS_VERSION
     private const int ScanWaitTimeoutMs = 30_000;
+    private const int DisposeGateTimeoutMs = 2_000;
+    private const int HangCheckPeriodMs = 5_000;
+    private const int SlowCallMs = 1_000;
 
     /// <summary>Files searched per <c>fff_live_grep</c> call (its <c>page_limit</c>).</summary>
     internal const uint c_FilePageLimit = 512;
 
     private const int MaxGrepPages = 400;
     private const int GrepBudgetMs = 3_000;
+
+    /// <summary>
+    /// Ranked files pulled per "Git Modified" query before the git-status filter is applied. Large
+    /// because the filter is client-side and a modified file can sit anywhere in the fuzzy ranking,
+    /// so anything smaller silently hides modified files. It is a ceiling, not a cost: fff returns
+    /// what actually matched, which for a typed query is a small set, and this side rejects
+    /// unmodified candidates on the native pointer without marshalling them. Only "show me
+    /// everything" on a very large workspace pays for the whole pool, and that is one deliberate
+    /// keystroke rather than a per-character cost.
+    /// </summary>
+    private const uint GitModifiedPoolSize = 20_000;
 
     private static readonly System.Threading.Lock ResolverLock = new();
     private static bool resolverInstalled;
@@ -56,6 +70,19 @@ internal sealed partial class FffNativeClient : IDisposable
     private string? workspaceDir;
     private bool scanWaitCompleted;
     private int disposed;
+
+    /// <summary>
+    /// The one timer behind <see cref="CallWithWatchdog"/>, created on the first native call.
+    /// </summary>
+    private Timer? hangTimer;
+
+    /// <summary>
+    /// <see cref="Stopwatch"/> timestamp of the native call currently in flight, 0 when idle.
+    /// Written around every watched call, read by <see cref="ReportIfHung"/>.
+    /// </summary>
+    private long inFlightSince;
+
+    private string inFlightName = string.Empty;
 
     /// <summary>
     /// Bumped whenever the underlying index is replaced (<c>fff_restart_index</c>). Paged
@@ -143,7 +170,9 @@ internal sealed partial class FffNativeClient : IDisposable
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     ThrowIfNotStartedCore();
-                    return SearchFilesCore(query, currentFile, maxResults, useGlob: false);
+                    return SearchFilesCore(
+                        query, currentFile, (uint)maxResults, useGlob: false, maxResults,
+                        gitModifiedOnly: false, out _);
                 }
                 finally
                 {
@@ -172,10 +201,16 @@ internal sealed partial class FffNativeClient : IDisposable
                     IntPtr payload = UnwrapResult(result, "search_directories");
                     try
                     {
+                        // A successful FffResult with a null handle would otherwise reach the
+                        // header read below, where Marshal/ReadStruct dereference null.
+                        if (payload == IntPtr.Zero)
+                        {
+                            return (IReadOnlyList<DirItem>)Array.Empty<DirItem>();
+                        }
+
                         // v0.10.1 has no fff_dir_search_result_get_count export (it exists only
                         // on main) — read the count from the result struct header instead.
-                        FffDirSearchResultHeader header = Marshal.PtrToStructure<FffDirSearchResultHeader>(payload);
-                        uint count = header.Count;
+                        uint count = ReadStruct<FffDirSearchResultHeader>(payload).Count;
                         var items = new List<DirItem>((int)count);
                         for (uint i = 0; i < count; i++)
                         {
@@ -186,8 +221,8 @@ internal sealed partial class FffNativeClient : IDisposable
                             }
 
                             // FffDirItem { char* relative_path; char* dir_name; i32 frecency } —
-                            // the header exposes no accessors, so marshal the tiny struct.
-                            FffDirItem native = Marshal.PtrToStructure<FffDirItem>(item);
+                            // the header exposes no accessors, so read the tiny struct directly.
+                            FffDirItem native = ReadStruct<FffDirItem>(item);
                             string? path = PtrToString(native.RelativePath);
                             if (path is not null)
                             {
@@ -216,6 +251,7 @@ internal sealed partial class FffNativeClient : IDisposable
     /// </summary>
     public Task<IReadOnlyList<string>> GetHistoryAsync(int max, CancellationToken cancellationToken)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(max);
         ThrowIfDisposed();
 
         return Task.Run<IReadOnlyList<string>>(
@@ -230,9 +266,12 @@ internal sealed partial class FffNativeClient : IDisposable
                         return (IReadOnlyList<string>)queries;
                     }
 
-                    for (ulong offset = 0; offset < (ulong)max; offset++)
+                    // Counted in int, not ulong: 'offset < (ulong)max' with a negative max wraps to
+                    // ~1.8e19 and spins native history calls while holding the gate.
+                    for (int offset = 0; offset < max; offset++)
                     {
-                        IntPtr result = Native.fff_get_historical_query(handle, offset);
+                        cancellationToken.ThrowIfCancellationRequested();
+                        IntPtr result = Native.fff_get_historical_query(handle, (ulong)offset);
                         IntPtr payload = UnwrapResult(result, "get_historical_query");
                         if (payload == IntPtr.Zero)
                         {
@@ -271,6 +310,12 @@ internal sealed partial class FffNativeClient : IDisposable
     /// <c>fff_search</c> returns nothing for it, fall back to <c>fff_glob</c> with '*'
     /// (glob-only search ranked by frecency, per the header).
     /// </summary>
+    /// <remarks>
+    /// fff exposes no git-status filter, so the filtering happens here — which means the pool it
+    /// is applied to has to be much larger than the result count. Asking for <c>maxResults</c>
+    /// ranked files and filtering those (as this did) shows only the modified files that happen
+    /// to land in the fuzzy top hundred, so a repo with dozens of modified files reports two.
+    /// </remarks>
     public Task<IReadOnlyList<FileItem>> GitModifiedAsync(string query, int maxResults, CancellationToken cancellationToken)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxResults);
@@ -285,16 +330,18 @@ internal sealed partial class FffNativeClient : IDisposable
                     cancellationToken.ThrowIfCancellationRequested();
                     ThrowIfNotStartedCore();
 
-                    List<FileItem> items = SearchFilesCore(query, null, maxResults, useGlob: false);
-                    if (items.Count == 0 && query.Length == 0)
+                    List<FileItem> items = SearchFilesCore(
+                        query, null, GitModifiedPoolSize, useGlob: false, maxResults, gitModifiedOnly: true,
+                        out uint rankedCount);
+                    if (rankedCount == 0 && query.Length == 0)
                     {
                         SeekyLog.Info("fff: empty-query search returned nothing; falling back to fff_glob '*'");
-                        items = SearchFilesCore("*", null, maxResults, useGlob: true);
+                        items = SearchFilesCore(
+                            "*", null, GitModifiedPoolSize, useGlob: true, maxResults, gitModifiedOnly: true,
+                            out _);
                     }
 
-                    return [.. items
-                        .Where(f => !string.IsNullOrEmpty(f.GitStatus))
-                        .Take(maxResults)];
+                    return items;
                 }
                 finally
                 {
@@ -339,20 +386,44 @@ internal sealed partial class FffNativeClient : IDisposable
             cancellationToken);
     }
 
-    private List<FileItem> SearchFilesCore(string query, string? currentFile, int maxResults, bool useGlob)
+    /// <param name="pageSize">How many ranked files to ask fff for.</param>
+    /// <param name="maxItems">How many to keep after filtering.</param>
+    /// <param name="gitModifiedOnly">
+    /// Keep only files with a non-empty git status. Tested on the native pointer before anything
+    /// is marshalled, so an over-fetched candidate pool costs accessor calls rather than strings.
+    /// </param>
+    /// <param name="rankedCount">
+    /// How many files fff ranked, before <paramref name="gitModifiedOnly"/> filtering — the caller
+    /// needs to tell "the search found nothing" apart from "nothing it found was modified".
+    /// </param>
+    private List<FileItem> SearchFilesCore(
+        string query,
+        string? currentFile,
+        uint pageSize,
+        bool useGlob,
+        int maxItems,
+        bool gitModifiedOnly,
+        out uint rankedCount)
     {
         IntPtr result = useGlob
-            ? CallWithWatchdog("glob", () => Native.fff_glob(handle, query, currentFile, 0, 0, (uint)maxResults))
-            : CallWithWatchdog("search", () => Native.fff_search(handle, query, currentFile, 0, 0, (uint)maxResults, 0, 0));
+            ? CallWithWatchdog("glob", () => Native.fff_glob(handle, query, currentFile, 0, 0, pageSize))
+            : CallWithWatchdog("search", () => Native.fff_search(handle, query, currentFile, 0, 0, pageSize, 0, 0));
         IntPtr payload = UnwrapResult(result, useGlob ? "glob" : "search");
         try
         {
             uint count = Native.fff_search_result_get_count(payload);
-            var items = new List<FileItem>((int)count);
-            for (uint i = 0; i < count; i++)
+            rankedCount = count;
+            var items = new List<FileItem>((int)Math.Min(count, (uint)maxItems));
+            for (uint i = 0; i < count && items.Count < maxItems; i++)
             {
                 IntPtr item = Native.fff_search_result_get_item(payload, i);
                 if (item == IntPtr.Zero)
+                {
+                    continue;
+                }
+
+                IntPtr gitStatus = Native.fff_file_item_get_git_status(item);
+                if (gitModifiedOnly && IsNullOrEmptyUtf8(gitStatus))
                 {
                     continue;
                 }
@@ -363,7 +434,7 @@ internal sealed partial class FffNativeClient : IDisposable
                     items.Add(new FileItem(
                         path,
                         Native.fff_file_item_get_total_frecency_score(item),
-                        PtrToString(Native.fff_file_item_get_git_status(item)),
+                        PtrToString(gitStatus),
                         Native.fff_file_item_get_is_binary(item)));
                 }
             }
@@ -416,21 +487,27 @@ internal sealed partial class FffNativeClient : IDisposable
                             return new GrepResult([], fallbackError);
                         }
 
-                        result = GrepPageCore(query, mode, fileOffset, c_FilePageLimit);
+                        // Only what is still missing is marshalled: a broad query ('e', 'public')
+                        // can match tens of thousands of lines in one 512-file page, and every one
+                        // costs three native string decodes plus its highlight ranges.
+                        result = GrepPageCore(
+                            query, mode, fileOffset, c_FilePageLimit, maxResults - matches.Count, withRanges: true);
                     }
                     finally
                     {
                         gate.Release();
                     }
 
-                    fallbackError ??= result.RegexFallbackError;
-                    foreach (GrepMatch match in result.Matches)
+                    if (fallbackError is null && result.RegexFallbackError is not null)
                     {
-                        matches.Add(match);
-                        if (matches.Count >= maxResults)
-                        {
-                            return new GrepResult(matches, fallbackError);
-                        }
+                        fallbackError = result.RegexFallbackError;
+                        SeekyLog.Info($"fff live_grep: regex fallback: {fallbackError}");
+                    }
+
+                    matches.AddRange(result.Matches);
+                    if (matches.Count >= maxResults)
+                    {
+                        return new GrepResult(matches, fallbackError);
                     }
 
                     if (result.NextFileOffset == 0 || stopwatch.ElapsedMilliseconds > GrepBudgetMs)
@@ -451,8 +528,17 @@ internal sealed partial class FffNativeClient : IDisposable
     /// <paramref name="filePageLimit"/> files. Used by <see cref="SymbolIndex"/> to sweep the
     /// whole workspace; most callers want <see cref="GrepAsync"/>.
     /// </summary>
+    /// <param name="withRanges">
+    /// False to leave <see cref="GrepMatch.Ranges"/> empty. A sweep that reads only the line text
+    /// pays for the byte-offset translation of every match otherwise.
+    /// </param>
     public Task<GrepPage> GrepPageAsync(
-        string query, GrepMode mode, uint fileOffset, uint filePageLimit, CancellationToken cancellationToken)
+        string query,
+        GrepMode mode,
+        uint fileOffset,
+        uint filePageLimit,
+        CancellationToken cancellationToken,
+        bool withRanges = true)
     {
         ArgumentOutOfRangeException.ThrowIfZero(filePageLimit);
         ThrowIfDisposed();
@@ -464,7 +550,7 @@ internal sealed partial class FffNativeClient : IDisposable
                 await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
                 try
                 {
-                    return GrepPageCore(query, mode, fileOffset, filePageLimit);
+                    return GrepPageCore(query, mode, fileOffset, filePageLimit, int.MaxValue, withRanges);
                 }
                 finally
                 {
@@ -483,7 +569,13 @@ internal sealed partial class FffNativeClient : IDisposable
     public int WorkspaceGeneration => Volatile.Read(ref workspaceGeneration);
 
     /// <summary>Caller must hold <see cref="gate"/>.</summary>
-    private GrepPage GrepPageCore(string query, GrepMode mode, uint fileOffset, uint filePageLimit)
+    /// <param name="maxMatches">
+    /// Stop marshalling after this many matches. The native search has already run by then — this
+    /// bounds the managed half, which is the expensive one.
+    /// </param>
+    /// <param name="withRanges">False to skip highlight-range translation entirely.</param>
+    private GrepPage GrepPageCore(
+        string query, GrepMode mode, uint fileOffset, uint filePageLimit, int maxMatches, bool withRanges)
     {
         ThrowIfNotStartedCore();
 
@@ -503,15 +595,15 @@ internal sealed partial class FffNativeClient : IDisposable
         IntPtr payload = UnwrapResult(result, "live_grep");
         try
         {
+            // Reported, not logged: every page of a paged sweep repeats the same fallback, and
+            // SeekyLog writes each line with its own open/append/close under a global lock — 400
+            // of those, while this call holds the gate, for one bad regex. Callers log it once.
             string? fallbackError = PtrToString(Native.fff_grep_result_get_regex_fallback_error(payload));
-            if (fallbackError is not null)
-            {
-                SeekyLog.Info($"fff live_grep: regex fallback: {fallbackError}");
-            }
 
             uint count = Native.fff_grep_result_get_count(payload);
-            var matches = new List<GrepMatch>((int)count);
-            for (uint i = 0; i < count; i++)
+            var matches = new List<GrepMatch>((int)Math.Min(count, (uint)maxMatches));
+            var pathCache = new Utf8StringCache();
+            for (uint i = 0; i < count && matches.Count < maxMatches; i++)
             {
                 IntPtr match = Native.fff_grep_result_get_match(payload, i);
                 if (match == IntPtr.Zero)
@@ -519,13 +611,20 @@ internal sealed partial class FffNativeClient : IDisposable
                     continue;
                 }
 
-                string? path = PtrToString(Native.fff_grep_match_get_relative_path(match));
-                if (path is null)
+                IntPtr pathPtr = Native.fff_grep_match_get_relative_path(match);
+                if (pathPtr == IntPtr.Zero)
                 {
                     continue;
                 }
 
-                string text = PtrToString(Native.fff_grep_match_get_line_content(match)) ?? string.Empty;
+                string path = pathCache.GetOrDecode(NullTerminatedSpan(pathPtr));
+
+                // The line is taken as raw native bytes rather than through PtrToString because the
+                // match ranges are byte offsets into exactly these bytes. Decoding to a string and
+                // re-encoding does not round-trip: bytes fff accepted but .NET rejects come back as
+                // U+FFFD, three bytes where the original was one, sliding every later offset.
+                ReadOnlySpan<byte> lineBytes = NullTerminatedSpan(Native.fff_grep_match_get_line_content(match));
+                string text = Encoding.UTF8.GetString(lineBytes);
 
                 // is_definition is read but never trusted: fff_c.dll v0.10.1 reports false for
                 // every match, including its own documented cases ('class Foo', 'fn bar').
@@ -535,7 +634,7 @@ internal sealed partial class FffNativeClient : IDisposable
                     checked((int)Native.fff_grep_match_get_line_number(match)),
                     text,
                     (int)Native.fff_grep_match_get_col(match),
-                    ReadMatchRanges(match, text),
+                    withRanges ? ReadMatchRanges(match, lineBytes) : [],
                     PtrToString(Native.fff_grep_match_get_git_status(match)),
                     Native.fff_grep_match_get_is_binary(match),
                     Native.fff_grep_match_get_is_definition(match)));
@@ -555,40 +654,95 @@ internal sealed partial class FffNativeClient : IDisposable
 
     /// <summary>
     /// Wraps a native call with a hang detector: while the call is still running a WATCHDOG line
-    /// is logged every 5s (a hung fff call otherwise looks identical to "no results").
-    /// Slow-but-finished calls over 1s are logged once, on completion.
+    /// is logged every <see cref="HangCheckPeriodMs"/>ms (a hung fff call otherwise looks identical
+    /// to "no results"). Slow-but-finished calls over <see cref="SlowCallMs"/>ms are logged once,
+    /// on completion.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The timer is <b>periodic</b>, not one-shot: a wedged call keeps reporting (5s, 10s, 15s…)
+    /// Reporting is <b>periodic</b>, not one-shot: a wedged call keeps reporting (5s, 10s, 15s…)
     /// so the log shows it is still stuck rather than leaving a single line and silence.
     /// </para>
     /// <para>
-    /// Deliberately a <see cref="Timer"/> and not <see cref="PeriodicTimer"/>. This wraps every
-    /// native entry point — ~130 <c>live_grep</c> calls per symbol sweep plus one per keystroke —
-    /// so it must stay allocation-cheap, and <c>PeriodicTimer</c> would need a task plus a
-    /// completion handshake per call. Exceptions from the callback are swallowed by the timer, by
-    /// design: a hang <i>detector</i> must never be able to fail the call it is watching, and
-    /// rethrowing from a <c>finally</c> here would replace a real fff error with a logging error.
+    /// One long-lived timer for the whole client, not one per call. This wraps every native entry
+    /// point — ~130 <c>live_grep</c> calls per symbol sweep plus one per keystroke — and a
+    /// per-call <see cref="Timer"/> costs a timer object, a closure, a <see cref="Stopwatch"/> and
+    /// two <c>TimerQueue</c> lock acquisitions each. Since <see cref="gate"/> serializes every
+    /// native call, at most one is ever in flight, so a single timer reading one timestamp field
+    /// does the same job for two volatile writes per call. The idle cost is one callback every
+    /// five seconds that reads a <see cref="long"/> and returns.
     /// </para>
     /// </remarks>
-    private static IntPtr CallWithWatchdog(string name, Func<IntPtr> call)
+    private IntPtr CallWithWatchdog(string name, Func<IntPtr> call)
     {
-        var stopwatch = Stopwatch.StartNew();
-        using var hangTimer = new Timer(
-            _ => SeekyLog.Info(
-                $"WATCHDOG: fff {name} still running after {stopwatch.ElapsedMilliseconds}ms (possible native hang)"),
-            null,
-            dueTime: 5000,
-            period: 5000);
-
-        IntPtr result = call();
-        if (stopwatch.ElapsedMilliseconds > 1000)
+        EnsureHangTimer();
+        long start = Stopwatch.GetTimestamp();
+        inFlightName = name;
+        Volatile.Write(ref inFlightSince, start);
+        try
         {
-            SeekyLog.Info($"fff {name} took {stopwatch.ElapsedMilliseconds}ms");
+            return call();
+        }
+        finally
+        {
+            // In a finally so a throwing call (a resolver DllNotFoundException, say) cannot leave
+            // the slot armed and the watchdog reporting a hang that already ended.
+            Volatile.Write(ref inFlightSince, 0);
+            long elapsedMs = (long)Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+            if (elapsedMs > SlowCallMs)
+            {
+                SeekyLog.Info($"fff {name} took {elapsedMs}ms");
+            }
+        }
+    }
+
+    private void EnsureHangTimer()
+    {
+        if (hangTimer is not null)
+        {
+            return;
         }
 
-        return result;
+        var timer = new Timer(
+            static state => ((FffNativeClient)state!).ReportIfHung(),
+            this,
+            HangCheckPeriodMs,
+            HangCheckPeriodMs);
+
+        // Kept only if the field was empty AND this client is still alive. A scheduled Timer is
+        // rooted by the timer queue, so one published after Dispose would go on firing every five
+        // seconds for the life of the process with nothing left to report on.
+        if (Interlocked.CompareExchange(ref hangTimer, timer, null) is null
+            && Volatile.Read(ref disposed) == 0)
+        {
+            return;
+        }
+
+        Interlocked.CompareExchange(ref hangTimer, null, timer);
+        timer.Dispose();
+    }
+
+    /// <summary>
+    /// Logs the in-flight native call if it has been running long enough to look wedged. Must
+    /// never throw — an unhandled exception on a timer callback takes down the process, and a hang
+    /// <i>detector</i> has no business failing the host it is watching. <see cref="SeekyLog"/>
+    /// swallows its own errors, which is the whole of the guarantee.
+    /// </summary>
+    private void ReportIfHung()
+    {
+        long since = Volatile.Read(ref inFlightSince);
+        if (since == 0)
+        {
+            return;
+        }
+
+        long elapsedMs = (long)Stopwatch.GetElapsedTime(since).TotalMilliseconds;
+        if (elapsedMs >= HangCheckPeriodMs)
+        {
+            // inFlightName may lag inFlightSince by an instruction; the call has to have been
+            // running for seconds to get here, so a name that stale cannot be the one reported.
+            SeekyLog.Info($"WATCHDOG: fff {inFlightName} still running after {elapsedMs}ms (possible native hang)");
+        }
     }
 
     /// <summary>
@@ -645,7 +799,20 @@ internal sealed partial class FffNativeClient : IDisposable
             return;
         }
 
-        gate.Wait();
+        // Before the gate wait, so it happens even on the timeout path below.
+        Interlocked.Exchange(ref hangTimer, null)?.Dispose();
+
+        // Bounded, because this runs on the extension-unload path and a background symbol sweep
+        // can hold the gate for its whole build budget with nothing able to cancel it. Skipping
+        // fff_destroy leaks an instance in a process that is already going away; blocking the
+        // unload for twenty seconds is the worse trade.
+        if (!gate.Wait(DisposeGateTimeoutMs))
+        {
+            SeekyLog.Info(
+                $"fff: a native call still held the gate after {DisposeGateTimeoutMs}ms; skipping destroy");
+            return;
+        }
+
         try
         {
             if (handle != IntPtr.Zero)
@@ -674,10 +841,20 @@ internal sealed partial class FffNativeClient : IDisposable
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+
+        // Re-checked here under the gate, not only at the public entry point: a StartAsync that
+        // cleared ThrowIfDisposed just before Dispose ran would otherwise reach
+        // fff_create_instance_with below and leave a live instance behind — watcher threads, open
+        // LMDBs — that nothing owns and nothing will ever destroy.
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
         EnsureResolver();
 
         bool sameWorkspace = handle != IntPtr.Zero
-            && string.Equals(workspaceDir, dir, StringComparison.OrdinalIgnoreCase);
+            && workspaceDir is not null
+            && string.Equals(
+                TrimTrailingSeparators(workspaceDir),
+                TrimTrailingSeparators(dir),
+                StringComparison.OrdinalIgnoreCase);
         if (sameWorkspace && scanWaitCompleted)
         {
             return;
@@ -772,9 +949,19 @@ internal sealed partial class FffNativeClient : IDisposable
         }
 
         scanWaitCompleted = true;
-        reportStatus?.Invoke($"index ready — {GetScannedFileCount()} files");
-        SeekyLog.Info($"fff: scan complete in {waitStart.ElapsedMilliseconds}ms ({GetScannedFileCount()} files)");
+        ulong scannedFiles = GetScannedFileCount();
+        reportStatus?.Invoke($"index ready — {scannedFiles} files");
+        SeekyLog.Info($"fff: scan complete in {waitStart.ElapsedMilliseconds}ms ({scannedFiles} files)");
     }
+
+    /// <summary>
+    /// Workspace roots for comparison only — 'O:\repo' and 'O:\repo\' name the same workspace, and
+    /// telling them apart costs a full <c>fff_restart_index</c>. Never used for the path handed to
+    /// the native side, so collapsing a drive root ('C:\' to 'C:') is harmless: both sides of the
+    /// comparison go through here. Allocates nothing when there is nothing to trim.
+    /// </summary>
+    private static string TrimTrailingSeparators(string dir) =>
+        dir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
     private void ThrowIfNotStartedCore()
     {
@@ -795,8 +982,7 @@ internal sealed partial class FffNativeClient : IDisposable
                 return 0;
             }
 
-            FffScanProgress progress = Marshal.PtrToStructure<FffScanProgress>(payload);
-            return progress.ScannedFilesCount;
+            return ReadStruct<FffScanProgress>(payload).ScannedFilesCount;
         }
         finally
         {
@@ -806,25 +992,29 @@ internal sealed partial class FffNativeClient : IDisposable
 
     /// <summary>
     /// Reads a grep match's highlight spans. Native <c>FffMatchRange</c> values are BYTE offsets
-    /// into the UTF-8 line, but the page works in UTF-16 char indices: the line is re-encoded
-    /// to UTF-8 once and converted to a byte-offset→UTF-16-prefix table to avoid repeated
-    /// decoding work. Offsets are clamped defensively (including mid-multibyte cuts and
-    /// swapped ends); degenerate spans are dropped. The returned ranges borrow from the parent
-    /// <c>FffGrepResult</c> — call only while it is alive; there is no separate free for them.
+    /// into <paramref name="utf8Line"/>, but the page works in UTF-16 char indices, so they are
+    /// translated through a byte-offset→UTF-16-prefix table. Offsets are clamped defensively
+    /// (including mid-multibyte cuts and swapped ends); degenerate spans are dropped.
     /// </summary>
-    private static SeekyRange[] ReadMatchRanges(IntPtr match, string lineText)
+    /// <param name="utf8Line">
+    /// The match's line as the native library holds it. Borrowed from the parent
+    /// <c>FffGrepResult</c> — valid only until that result is freed.
+    /// </param>
+    private static SeekyRange[] ReadMatchRanges(IntPtr match, ReadOnlySpan<byte> utf8Line)
     {
         uint count = Native.fff_grep_match_get_match_ranges_count(match);
-        if (count == 0 || lineText.Length == 0)
+        if (count == 0 || utf8Line.IsEmpty)
         {
             return [];
         }
 
-        byte[] utf8 = Encoding.UTF8.GetBytes(lineText);
-        ReadOnlySpan<byte> utf8Span = utf8;
-        int[] prefixUtf16Counts = BuildUtf16PrefixCounts(utf8Span);
-        //var ranges = new List<(int Start, int End)>((int)count);
-        var ranges = new List<SeekyRange>((int)count);
+        // An all-ASCII line — nearly every line of source — needs no table at all: one byte is
+        // exactly one UTF-16 unit, so the native offsets are already char indices. Skipping the
+        // table here is what keeps a full symbol sweep from allocating an int[] per match.
+        int[]? prefixUtf16Counts = Ascii.IsValid(utf8Line) ? null : BuildUtf16PrefixCounts(utf8Line);
+
+        var ranges = new SeekyRange[count];
+        int written = 0;
         for (uint i = 0; i < count; i++)
         {
             IntPtr rangePtr = Native.fff_grep_match_get_match_range(match, i);
@@ -833,26 +1023,30 @@ internal sealed partial class FffNativeClient : IDisposable
                 continue;
             }
 
-            FffMatchRange range = Marshal.PtrToStructure<FffMatchRange>(rangePtr);
-            int startByte = (int)Math.Min(range.Start, (uint)utf8.Length);
-            int endByte = (int)Math.Min(range.End, (uint)utf8.Length);
+            FffMatchRange range = ReadStruct<FffMatchRange>(rangePtr);
+            int startByte = (int)Math.Min(range.Start, (uint)utf8Line.Length);
+            int endByte = (int)Math.Min(range.End, (uint)utf8Line.Length);
             if (endByte < startByte)
             {
                 (startByte, endByte) = (endByte, startByte);
             }
 
-            int start = prefixUtf16Counts[Math.Min(startByte, prefixUtf16Counts.Length - 1)];
-            int end = prefixUtf16Counts[Math.Min(endByte, prefixUtf16Counts.Length - 1)];
+            int start = prefixUtf16Counts is null ? startByte : prefixUtf16Counts[startByte];
+            int end = prefixUtf16Counts is null ? endByte : prefixUtf16Counts[endByte];
             if (end > start)
             {
-                //ranges.Add((start, end));
-                ranges.Add(new SeekyRange(start,end));
+                ranges[written++] = new SeekyRange(start, end);
             }
         }
 
-        return [.. ranges];
+        return written == ranges.Length ? ranges : ranges.AsSpan(0, written).ToArray();
     }
 
+    /// <summary>
+    /// Maps each byte offset in <paramref name="utf8"/> to the number of UTF-16 units that precede
+    /// it in the decoded string. Offsets landing inside a multi-byte sequence map to the start of
+    /// the character they cut into.
+    /// </summary>
     private static int[] BuildUtf16PrefixCounts(ReadOnlySpan<byte> utf8)
     {
         var prefixCounts = new int[utf8.Length + 1];
@@ -861,43 +1055,25 @@ internal sealed partial class FffNativeClient : IDisposable
 
         while (byteOffset < utf8.Length)
         {
-            prefixCounts[byteOffset] = utf16Count;
-            int sequenceLength = GetUtf8SequenceLength(utf8[byteOffset]);
-            for (int offsetInSequence = 1; offsetInSequence < sequenceLength; offsetInSequence++)
+            // Decoded with Rune rather than hand-rolled sequence-length arithmetic for two
+            // reasons: these are the native library's bytes, which are not guaranteed to be
+            // well-formed UTF-8, and Rune applies the same maximal-subpart U+FFFD replacement
+            // policy as the Encoding.UTF8.GetString that produced the string these offsets index
+            // into — anything else lets the table and the string disagree on malformed input.
+            _ = Rune.DecodeFromUtf8(utf8[byteOffset..], out Rune rune, out int bytesConsumed);
+            for (int i = 0; i < bytesConsumed; i++)
             {
-                int nextByteOffset = byteOffset + offsetInSequence;
-                if (nextByteOffset <= utf8.Length)
-                {
-                    prefixCounts[nextByteOffset] = utf16Count;
-                }
+                prefixCounts[byteOffset + i] = utf16Count;
             }
 
-            utf16Count++;
-            byteOffset += sequenceLength;
+            // Utf16SequenceLength, not 1: an astral-plane character is a surrogate PAIR, and
+            // counting it as a single unit shifts every range after the first emoji on the line.
+            utf16Count += rune.Utf16SequenceLength;
+            byteOffset += bytesConsumed;
         }
 
         prefixCounts[utf8.Length] = utf16Count;
         return prefixCounts;
-    }
-
-    private static int GetUtf8SequenceLength(byte leadingByte)
-    {
-        if ((leadingByte & 0x80) == 0)
-        {
-            return 1;
-        }
-
-        if ((leadingByte & 0xE0) == 0xC0)
-        {
-            return 2;
-        }
-
-        if ((leadingByte & 0xF0) == 0xE0)
-        {
-            return 3;
-        }
-
-        return 4;
     }
 
     // ------------------------------------------------------------------ helpers
@@ -937,6 +1113,65 @@ internal sealed partial class FffNativeClient : IDisposable
 
     private static string? PtrToString(IntPtr ptr) =>
         ptr == IntPtr.Zero ? null : Marshal.PtrToStringUTF8(ptr);
+
+    /// <summary>
+    /// True when a native UTF-8 string pointer is null or points at "". Lets a caller reject an
+    /// item before paying <see cref="Marshal.PtrToStringUTF8"/> for it.
+    /// </summary>
+    private static unsafe bool IsNullOrEmptyUtf8(IntPtr ptr) => ptr == IntPtr.Zero || *(byte*)ptr == 0;
+
+    /// <summary>
+    /// Decodes native UTF-8 strings, reusing the previous result when the bytes repeat.
+    /// </summary>
+    /// <remarks>
+    /// Sized for the one-element case on purpose: grep output arrives grouped by file, so every
+    /// match after the first in a file repeats the path immediately before it. A hit costs a
+    /// vectorized span compare instead of a UTF-8 decode plus an allocation, and — the part that
+    /// outlives the call — the retained results then share one string per file rather than
+    /// carrying one per match, which is most of what a cached symbol index is made of.
+    /// </remarks>
+    private sealed class Utf8StringCache
+    {
+        private byte[] bytes = [];
+        private int length;
+        private string? value;
+
+        public string GetOrDecode(ReadOnlySpan<byte> utf8)
+        {
+            if (value is not null && utf8.SequenceEqual(bytes.AsSpan(0, length)))
+            {
+                return value;
+            }
+
+            if (bytes.Length < utf8.Length)
+            {
+                bytes = new byte[Math.Max(utf8.Length, 128)];
+            }
+
+            utf8.CopyTo(bytes);
+            length = utf8.Length;
+            value = Encoding.UTF8.GetString(utf8);
+            return value;
+        }
+    }
+
+    /// <summary>
+    /// A span over a NUL-terminated native UTF-8 string, without copying it. Borrowed from
+    /// whatever native object owns the pointer — valid only until that object is freed. Empty for
+    /// a null pointer.
+    /// </summary>
+    private static unsafe ReadOnlySpan<byte> NullTerminatedSpan(IntPtr ptr) =>
+        MemoryMarshal.CreateReadOnlySpanFromNullTerminated((byte*)ptr);
+
+    /// <summary>
+    /// Reads a blittable native struct as a plain load. <see cref="Marshal.PtrToStructure{T}(IntPtr)"/>
+    /// does the same job through a marshalling helper and throws <see cref="NullReferenceException"/>
+    /// on a null pointer; these run per match range, so the helper is not worth paying for. The
+    /// pointer must be non-null and naturally aligned (it always is — Rust allocated it).
+    /// </summary>
+    private static unsafe T ReadStruct<T>(IntPtr ptr)
+        where T : unmanaged =>
+        *(T*)ptr;
 
     // The extension host doesn't probe our folder for native assets — same pattern as the
     // WebView2Loader resolver: resolve fff_c.dll relative to the extension assembly.

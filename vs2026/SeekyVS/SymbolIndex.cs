@@ -64,9 +64,6 @@ internal static class SymbolIndex
     /// <summary>A symbol that matched a query, with the match spans into <see cref="Entry.Name"/>.</summary>
     internal readonly record struct Hit(Entry Entry, int Score, SeekyRange[] NameRanges);
 
-    /// <summary>A half-open [Start, End) span of char indices into a symbol name.</summary>
-    internal readonly record struct SeekyRange(int Start, int End);
-
     /// <summary>Drops the cached index — call when the workspace root changes.</summary>
     internal static void Invalidate()
     {
@@ -282,12 +279,16 @@ internal static class SymbolIndex
                 return [];
             }
 
+            // withRanges: false — the sweep highlights nothing. Query() builds its own spans over
+            // the symbol NAME with FuzzyMatcher, so per-match highlight ranges over the line would
+            // be translated from native byte offsets and thrown away, tens of thousands of times.
             FffNativeClient.GrepPage result = await client.GrepPageAsync(
                 SweepPattern,
                 FffNativeClient.GrepMode.Regex,
                 fileOffset,
                 FffNativeClient.c_FilePageLimit,
-                cancellationToken);
+                cancellationToken,
+                withRanges: false);
 
             if (result.RegexFallbackError is not null)
             {

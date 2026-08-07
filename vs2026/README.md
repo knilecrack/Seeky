@@ -150,11 +150,20 @@ same — these failures are all silent or cryptic without instrumentation.
   `Microsoft.Web.WebView2` **1.0.4078.44** (only the Core assembly is used; the Wpf/WinForms
   DLLs ship inertly in the VSIX and are never loaded).
 - `SeekyVSExtension.cs` — extension entrypoint; metadata id `SeekyVS.3f6b2d8a-…`, display name "Seeky".
-- `SeekyFindFilesCommand.cs` / `SeekyLiveGrepCommand.cs` / `SeekySymbolsCommand.cs` — "Seeky: Find
-  Files" (Ctrl+Shift+Alt+P) / "Seeky: Live Grep" (Ctrl+Shift+G) / "Seeky: Symbols"
-  (Ctrl+Shift+Alt+O), Tools menu → `SeekyModalWindowManager.ShowAsync(Extensibility, context,
-  mode)`. (The original `SeekyToolWindowCommand` opened the dead-end Remote UI tool window; see
-  git history.)
+- `SeekyFindFilesCommand.cs` / `SeekyLiveGrepCommand.cs` / `SeekySymbolsCommand.cs` /
+  `SeekyGrepWordCommand.cs` — "Seeky: Find Files" (Ctrl+Shift+Alt+P) / "Seeky: Live Grep"
+  (Ctrl+Shift+G) / "Seeky: Symbols" (Ctrl+Shift+Alt+O) / "Seeky: Grep Word Under Cursor"
+  (Ctrl+Shift+Alt+G), Tools menu → `SeekyModalWindowManager.ShowAsync(Extensibility, context,
+  mode, initialQuery)`. (The original `SeekyToolWindowCommand` opened the dead-end Remote UI tool
+  window; see git history.)
+- `EditorWord.cs` — the term Grep Word Under Cursor searches for: the editor selection if there is
+  one, else the identifier spanning the caret (`Selection.InsertionPosition` →
+  `GetContainingLine()` → expand over letters/digits/underscore). Caret on whitespace yields
+  nothing and the popup opens with an empty prompt, matching VS's own Ctrl+F3.
+- `SeekyState.cs` — popup state that outlives a close (font size, grep sub-mode, defs filter,
+  window size). Layered: `<workspace>\.vs\seeky\state.json` over
+  `%LOCALAPPDATA%\SeekyVS\settings.json` over built-in defaults. Written on hide, merged into the
+  target file so hand-edited keys (`fontFamily`, `opacity`) survive.
 - `SeekyModalWindowManager.cs` — the whole modal window: dedicated STA thread with a Win32 message
   loop + work queue + minimal `SynchronizationContext`; `RegisterClassEx`/`CreateWindowEx` window;
   WebView2 Core controller on the HWND (env, bounds on `WM_SIZE`, virtual host mapping anchored at
@@ -330,7 +339,8 @@ Host → page:
 { "type": "preview", "path": "src/a.dll", "binary": true }
                                                     // binary files: no content, page shows a note
 { "type": "status",  "message": "indexing…" }       // status-line text: indexing, errors, etc.
-{ "type": "setQuery", "query": "…" }                // honored by the page; not currently sent
+{ "type": "setQuery", "query": "…" }                // pre-fills the prompt, selects it, searches;
+                                                    //   sent by Grep Word Under Cursor
 { "type": "setMode",  "mode": "files" }             // sent on show (Find Files / Live Grep /
                                                     //   Symbols commands)
 { "type": "history",  "queries": ["foo", "bar"] }   // past queries, most recent first;
