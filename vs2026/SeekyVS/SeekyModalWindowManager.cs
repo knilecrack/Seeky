@@ -57,6 +57,13 @@ internal static class SeekyModalWindowManager
     private const uint MbTopmost = 0x00040000;
     private const uint MbSetForeground = 0x00010000;
     private const int ErrorClassAlreadyExists = 1410;
+    private const int IdcArrow = 32512;
+
+    // Ctrl+Shift+Plus/Minus resize step, and the floor it will not go below — small enough to be
+    // a real reduction, large enough that the results and preview panes stay usable.
+    private const double WindowResizeStep = 0.05;
+    private const int MinWindowWidth = 600;
+    private const int MinWindowHeight = 400;
     // Popup size: ~80% of the primary screen, computed at show time.
     private static int windowWidth = 1200;
     private static int windowHeight = 700;
@@ -85,7 +92,17 @@ internal static class SeekyModalWindowManager
     /// finishes. Symbols mode searches the moment the popup shows, which reliably beats it.
     /// </summary>
     private static Task? workspaceRefresh;
+    /// <summary>
+    /// Font size, grep sub-mode and definitions filter as the page currently has them. Loaded on
+    /// show, updated by the page's "stateChanged" messages, flushed to disk on hide — see
+    /// <see cref="SeekyState"/> for where it lands.
+    /// </summary>
+    private static SeekyState popupState = new();
+
     private static string requestedMode = "files";
+
+    /// <summary>Prompt text to open with, from Grep Word Under Cursor; null for every other command.</summary>
+    private static string? requestedQuery;
     private static int searchGeneration;
     private static CancellationTokenSource? searchCancellation;
     private static string lastSearchQuery = string.Empty;
@@ -96,12 +113,24 @@ internal static class SeekyModalWindowManager
     /// <param name="extensibility">The extensibility object (for workspaces/documents APIs).</param>
     /// <param name="clientContext">The command's client context (fallback workspace source).</param>
     /// <param name="mode">Picker mode the page should start in: "files", "grep", or "git".</param>
+    /// <param name="initialQuery">
+    /// Pre-fills the prompt and searches immediately (Grep Word Under Cursor). Null leaves the
+    /// prompt empty, which is what every other command wants.
+    /// </param>
     /// <returns>A task completing when the show request has been processed on the UI thread.</returns>
-    public static Task ShowAsync(VisualStudioExtensibility extensibility, IClientContext clientContext, string mode)
+    public static Task ShowAsync(
+        VisualStudioExtensibility extensibility,
+        IClientContext clientContext,
+        string mode,
+        string? initialQuery = null)
     {
         SeekyModalWindowManager.extensibility = extensibility;
         lastClientContext = clientContext;
         requestedMode = mode is "files" or "grep" or "git" or "dirs" or "symbols" ? mode : "files";
+
+        // Set on every show, so a plain Live Grep after a Grep Word clears it rather than
+        // inheriting the previous command's term.
+        requestedQuery = initialQuery;
         EnsureUiThread();
         SeekyLog.Info($"ShowAsync (mode={requestedMode}): enqueueing ShowCore on UI thread");
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -115,6 +144,10 @@ internal static class SeekyModalWindowManager
     public static void Shutdown()
     {
         SeekyLog.Info("Shutdown: disposing fff native client");
+
+        // Normally flushed by HidePopup; this covers VS closing with the popup still up.
+        popupState.Save(workspaceDir);
+
         CancellationTokenSource? pendingSearch = Interlocked.Exchange(ref searchCancellation, null);
         if (pendingSearch is not null)
         {
@@ -200,8 +233,10 @@ internal static class SeekyModalWindowManager
             // reset the page to a clean, empty state.
             SeekyLog.Info("ShowCore: window already exists (hidden); re-showing");
             IntPtr currentOwner = FindVisualStudioMainWindow();
-            windowWidth = GetSystemMetrics(0) * 8 / 10;
-            windowHeight = GetSystemMetrics(1) * 8 / 10;
+
+            // Loaded before the move: the stored size decides how big the window comes back.
+            popupState = SeekyState.Load(workspaceDir);
+            ApplyWindowSize();
             GetWindowPosition(currentOwner, out int rx, out int ry);
             MoveWindow(windowHwnd, rx, ry, windowWidth, windowHeight, true);
             ShowWindow(windowHwnd, SwShow);
@@ -213,19 +248,20 @@ internal static class SeekyModalWindowManager
             workspaceRefresh = Task.Run(() => RefreshWorkspaceAsync());
         workspaceRefresh.Forget();
             PostJson(new { type = "reset" });
+
+            // Before setMode: applyMode redraws the prompt label, which shows the grep sub-mode,
+            // so the restored mode has to be in place by then.
+            PostState();
             PostJson(new { type = "setMode", mode = requestedMode });
-            PostJson(new { type = "setFont", fontFamily = ResolveFontFamily(), fontSize = ResolveFontSize() });
+            PostRequestedQuery();
             Task.Run(() => PostHistoryAsync()).Forget();
             FocusPopup();
             return;
         }
 
         IntPtr owner = FindVisualStudioMainWindow();
-
-        // ~80% of the primary screen (SM_CXSCREEN/SM_CYSCREEN).
-        windowWidth = GetSystemMetrics(0) * 8 / 10;
-        windowHeight = GetSystemMetrics(1) * 8 / 10;
-
+        popupState = SeekyState.Load(workspaceDir);
+        ApplyWindowSize();
         GetWindowPosition(owner, out int x, out int y);
 
         IntPtr hwnd = CreateWindowEx(
@@ -316,8 +352,10 @@ internal static class SeekyModalWindowManager
         coreWebView.DOMContentLoaded += (_, _) =>
         {
             SeekyLog.Info($"DOMContentLoaded: posting setMode '{requestedMode}'");
+            popupState = SeekyState.Load(workspaceDir);
+            PostState();
             PostJson(new { type = "setMode", mode = requestedMode });
-            PostJson(new { type = "setFont", fontFamily = ResolveFontFamily(), fontSize = ResolveFontSize() });
+            PostRequestedQuery();
             Task.Run(() => PostHistoryAsync()).Forget();
         };
         coreWebView.Navigate("https://seeky.vs/index.html");
@@ -339,9 +377,68 @@ internal static class SeekyModalWindowManager
         if (windowHwnd != IntPtr.Zero)
         {
             SeekyLog.Info("HidePopup: hiding window");
+            popupState.Save(workspaceDir);
+
+            // Before the hide, not after: the display count belongs to an input queue, and the
+            // effective pointer visibility follows the queue that is currently active. Restoring
+            // it while our window still holds focus makes the change take effect immediately,
+            // rather than incrementing a counter nobody is looking at any more.
+            RestoreArrowCursor();
             ShowWindow(windowHwnd, SwHide);
             SeekyLog.Info("HidePopup: ShowWindow(SW_HIDE) returned");
         }
+    }
+
+    /// <summary>
+    /// Makes the pointer visible again as our window goes away.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Two independent pieces of state can leave the pointer invisible, and they need separate
+    /// fixes. The <b>shape</b> is whatever last handled <c>WM_SETCURSOR</c> — Chromium, for the
+    /// WebView2 child that covers our client area. The <b>display count</b> is a per-input-queue
+    /// counter that must be zero or greater for the pointer to be drawn at all, and it wins over
+    /// any shape.
+    /// </para>
+    /// <para>
+    /// The display count is the one that bites here. Windows' "hide pointer while typing" (Mouse
+    /// control panel, on by default) decrements it as you type and restores it on the next mouse
+    /// move — but that restore belongs to the input queue that had focus while typing. This popup
+    /// runs its own UI thread with its own queue, so pressing Enter hands focus back to VS before
+    /// any mouse move arrives and the decrement is never undone. Nothing VS does afterwards
+    /// touches our queue's counter, which is exactly why the pointer only reappears after
+    /// re-opening the popup and moving the mouse over it.
+    /// </para>
+    /// <para>
+    /// Must run on the popup's UI pump thread — the counter belongs to that thread's input queue,
+    /// not to whichever thread happens to call this.
+    /// </para>
+    /// </remarks>
+    private static void RestoreArrowCursor()
+    {
+        IntPtr arrow = LoadCursor(IntPtr.Zero, IdcArrow);
+        if (arrow != IntPtr.Zero)
+        {
+            SetCursor(arrow);
+        }
+
+        // ShowCursor has no query form, so read the counter by incrementing and undoing it, then
+        // bring a negative count back to exactly 0. Never left above 0: over-incrementing would
+        // force the pointer visible over windows that legitimately hide it, which is the same
+        // class of bug in the other direction.
+        int displayCount = ShowCursor(true) - 1;
+        ShowCursor(false);
+        for (int i = displayCount; i < 0; i++)
+        {
+            ShowCursor(true);
+        }
+
+        // Logged unconditionally: if the pointer is still lost after this, "count was 0" and "this
+        // never ran" are very different answers and the absence of a line cannot distinguish them.
+        SeekyLog.Info(
+            displayCount < 0
+                ? $"RestoreArrowCursor: display count was {displayCount} (pointer hidden) — restored to 0"
+                : $"RestoreArrowCursor: display count was {displayCount} (pointer already visible) — left alone");
     }
 
     // SetForegroundWindow from a non-foreground process is normally rejected; attaching our input
@@ -444,6 +541,29 @@ internal static class SeekyModalWindowManager
                         break;
                     }
 
+                case "resizeWindow":
+                    HandleResizeWindow(GetInt(doc.RootElement, "step") ?? 0);
+                    break;
+
+                case "stateChanged":
+                    {
+                        // Kept in memory and flushed on hide rather than written per keystroke:
+                        // holding Ctrl+Plus autorepeats, and each repeat would otherwise be a
+                        // read-modify-write of the state file.
+                        bool? defsOnly = null;
+                        if (doc.RootElement.TryGetProperty("defsOnly", out JsonElement defs)
+                            && defs.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                        {
+                            defsOnly = defs.ValueKind == JsonValueKind.True;
+                        }
+
+                        popupState = popupState.With(
+                            GetInt(doc.RootElement, "fontSize"),
+                            GetString(doc.RootElement, "grepMode"),
+                            defsOnly);
+                        break;
+                    }
+
                 case "close":
                     SeekyLog.Info("WebMessageReceived: close — hiding window");
                     HidePopup();
@@ -496,9 +616,6 @@ internal static class SeekyModalWindowManager
 
     private const string MonoFontStack = "'Cascadia Code', Consolas, 'Courier New', monospace";
     private const string SystemFontStack = "'Segoe UI', system-ui, sans-serif";
-
-    /// <summary>Page font size in CSS px when settings.json says nothing — matches the stylesheet.</summary>
-    private const int DefaultFontSize = 13;
 
     /// <summary>
     /// Applies window chrome effects: uniform opacity from settings.json (<c>"opacity"</c>,
@@ -567,38 +684,89 @@ internal static class SeekyModalWindowManager
     /// style). Missing/malformed/unsafe values fall back to the mono stack.
     /// </summary>
     /// <summary>
-    /// Reads <c>"fontSize"</c> (CSS px, clamped 8–32) from settings.json; default 13 — the value
-    /// the stylesheet ships with. This is the persistent default; Ctrl+Plus/Minus adjust the
-    /// live size on the page without writing the file.
+    /// Pre-fills the prompt when the command supplied a term. Sent after 'setMode', because the
+    /// page searches on receipt and the search carries the mode with it.
     /// </summary>
-    private static int ResolveFontSize()
+    private static void PostRequestedQuery()
     {
-        string settingsPath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "SeekyVS",
-            "settings.json");
-        try
+        if (!string.IsNullOrEmpty(requestedQuery))
         {
-            if (!File.Exists(settingsPath))
-            {
-                return DefaultFontSize;
-            }
-
-            using JsonDocument settings = JsonDocument.Parse(File.ReadAllText(settingsPath));
-            if (settings.RootElement.TryGetProperty("fontSize", out JsonElement element)
-                && element.ValueKind == JsonValueKind.Number
-                && element.TryGetInt32(out int size))
-            {
-                return Math.Clamp(size, 8, 32);
-            }
+            PostJson(new { type = "setQuery", query = requestedQuery });
         }
-        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
-        {
-            SeekyLog.Error("settings.json: unreadable fontSize", ex);
-        }
-
-        return DefaultFontSize;
     }
+
+    /// <summary>
+    /// Sets the popup dimensions from the stored size, falling back to ~80% of the primary screen
+    /// (SM_CXSCREEN/SM_CYSCREEN) when none is stored. Clamped to the screen either way, so a size
+    /// saved on a large monitor does not open larger than the display it is opening on.
+    /// </summary>
+    private static void ApplyWindowSize()
+    {
+        int screenWidth = GetSystemMetrics(0);
+        int screenHeight = GetSystemMetrics(1);
+        if (popupState.WindowWidth > 0 && popupState.WindowHeight > 0)
+        {
+            windowWidth = Math.Min(popupState.WindowWidth, screenWidth);
+            windowHeight = Math.Min(popupState.WindowHeight, screenHeight);
+            return;
+        }
+
+        windowWidth = screenWidth * 8 / 10;
+        windowHeight = screenHeight * 8 / 10;
+    }
+
+    /// <summary>
+    /// Ctrl+Shift+Plus/Minus/0 from the page. Step 0 restores the default size and forgets the
+    /// stored one; otherwise the popup grows or shrinks by <see cref="WindowResizeStep"/>, clamped
+    /// to the screen and to a floor that keeps both panes usable.
+    /// </summary>
+    /// <remarks>
+    /// Runs on the UI pump thread — WebView2 raises its events on the thread that created the
+    /// controller, which is where the window lives. <c>MoveWindow</c> raises WM_SIZE, and the
+    /// existing handler re-bounds the WebView2, so the page follows without extra work.
+    /// </remarks>
+    private static void HandleResizeWindow(int step)
+    {
+        if (windowHwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        if (step == 0)
+        {
+            popupState = popupState.WithWindowSize(0, 0);
+        }
+        else
+        {
+            // Max, not the raw metric: on a display smaller than the floor the clamp bounds would
+            // cross over and Math.Clamp throws.
+            int maxWidth = Math.Max(GetSystemMetrics(0), MinWindowWidth);
+            int maxHeight = Math.Max(GetSystemMetrics(1), MinWindowHeight);
+            double scale = 1 + (step * WindowResizeStep);
+            popupState = popupState.WithWindowSize(
+                Math.Clamp((int)Math.Round(windowWidth * scale), MinWindowWidth, maxWidth),
+                Math.Clamp((int)Math.Round(windowHeight * scale), MinWindowHeight, maxHeight));
+        }
+
+        ApplyWindowSize();
+        GetWindowPosition(FindVisualStudioMainWindow(), out int x, out int y);
+        MoveWindow(windowHwnd, x, y, windowWidth, windowHeight, true);
+        PostStatus($"window {windowWidth}×{windowHeight}" + (step == 0 ? " (default)" : string.Empty));
+    }
+
+    /// <summary>
+    /// Sends the restored popup state to the page. The font family rides along because it comes
+    /// from the same settings file and lands on the same element — unlike the rest of this
+    /// message it is read-only, hand-edited in settings.json and never written back.
+    /// </summary>
+    private static void PostState() => PostJson(new
+    {
+        type = "setState",
+        fontFamily = ResolveFontFamily(),
+        fontSize = popupState.FontSize,
+        grepMode = popupState.GrepMode,
+        defsOnly = popupState.DefsOnly,
+    });
 
     private static string ResolveFontFamily()
     {
@@ -680,6 +848,14 @@ internal static class SeekyModalWindowManager
 
             workspaceDir = resolved;
             SymbolIndex.Invalidate(); // symbols are workspace-relative — never serve the old set
+
+            // The popup shows before this resolution finishes, so the state posted on show came
+            // from the previous workspace. Now that the root is known, re-read and re-post it —
+            // otherwise switching solutions carries the old solution's font size across, and the
+            // first hide would write it into the new solution's state file.
+            popupState = SeekyState.Load(resolved);
+            PostState();
+
             if (resolved is null)
             {
                 SeekyLog.Info("Workspace: no workspace open");
@@ -1291,7 +1467,16 @@ internal static class SeekyModalWindowManager
             CbWndExtra = 0,
             HInstance = hInstance,
             HIcon = IntPtr.Zero,
-            HCursor = IntPtr.Zero,
+
+            // A real cursor, not NULL. Per WNDCLASSEX, a null class cursor means "the application
+            // sets the cursor shape itself whenever the mouse enters the window" — and this one
+            // never did, so DefWindowProc's WM_SETCURSOR handling had nothing to set and simply
+            // left whatever shape was last applied globally. While the popup is up that shape
+            // belongs to the WebView2 child (Chromium calls SetCursor from its own message
+            // handling), so hiding the popup could strand the pointer in Chromium's last state —
+            // including invisible — with nothing to restore it until the mouse moved over another
+            // window. A shared system cursor; it must not be destroyed.
+            HCursor = LoadCursor(IntPtr.Zero, IdcArrow),
             HbrBackground = CreateSolidBrush(0x0041FF00), // COLORREF is 0x00BBGGRR — #00FF41 (phosphor green, matches the page)
             LpszMenuName = null,
             LpszClassName = WindowClassName,
@@ -1317,6 +1502,10 @@ internal static class SeekyModalWindowManager
                 return IntPtr.Zero;
             case WmDestroy:
                 SeekyLog.Info("WndProc: WM_DESTROY — closing WebView2 controller");
+
+                // Same reason as HidePopup: the window can also be torn down on the error path,
+                // and the pointer must not be left in whatever state the WebView2 last set.
+                RestoreArrowCursor();
                 try
                 {
                     controller?.Close();
@@ -1484,6 +1673,19 @@ internal static class SeekyModalWindowManager
 
     [DllImport("user32.dll")]
     private static extern bool DestroyWindow(IntPtr hWnd);
+
+    // lpCursorName is a MAKEINTRESOURCE ordinal for the system cursors, hence IntPtr rather than
+    // a string. System cursors are shared and must not be passed to DestroyCursor.
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr LoadCursor(IntPtr hInstance, IntPtr lpCursorName);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SetCursor(IntPtr hCursor);
+
+    // Returns the NEW display count. The pointer is drawn while that count is >= 0; the counter
+    // belongs to the calling thread's input queue.
+    [DllImport("user32.dll")]
+    private static extern int ShowCursor([MarshalAs(UnmanagedType.Bool)] bool bShow);
 
     [DllImport("user32.dll")]
     private static extern IntPtr DefWindowProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
