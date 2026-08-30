@@ -8,6 +8,7 @@ import { performance } from 'node:perf_hooks';
 import * as readline from 'node:readline';
 import { promisify } from 'node:util';
 import type { FileFinder, GrepMatch, FileItem } from '@ff-labs/fff-node';
+import * as vscode from 'vscode';
 import { log } from './logger';
 
 const execFileAsync = promisify(execFile);
@@ -46,7 +47,10 @@ export interface ISymbolResult {
 
 export type FFSearchResult = GrepResult | FileResult | ISymbolResult;
 
-const MAX_RESULTS = 100;
+function getMaxResults(): number {
+    const configured = vscode.workspace.getConfiguration('seeky').get<number>('maxResults', 200);
+    return configured > 0 ? configured : 200;
+}
 
 let finderInstance: FileFinder | null = null;
 let finderPromise: Promise<FileFinder | null> | null = null;
@@ -128,6 +132,7 @@ export function destroyFff(): void {
     finderInstance = null;
     finderPromise = null;
     currentBasePath = null;
+    gitModifiedCache = undefined;
 }
 
 /**
@@ -167,11 +172,12 @@ export function searchGrep(
         await new Promise(r => setTimeout(r, 0));
         if (cancelled) { onDone(cancelled); return; }
 
+        const maxResults = getMaxResults();
         const start = performance.now();
         const result = finder.grep(query, {
             mode: grepMode,
             smartCase: true,
-            pageSize: MAX_RESULTS,
+            pageSize: maxResults,
             maxMatchesPerFile: 100,
             timeBudgetMs: 150,
             ...(options?.classifyDefinitions !== undefined ? { classifyDefinitions: options.classifyDefinitions } : {}),
@@ -259,13 +265,14 @@ export function searchGlobFiles(
         const start = performance.now();
         const seen = new Set<string>();
         let collected = 0;
+        const maxResults = getMaxResults();
 
         for (const pattern of patterns) {
-            const result = finder.glob(pattern, { pageSize: MAX_RESULTS });
+            const result = finder.glob(pattern, { pageSize: maxResults });
             if (!result.ok) { continue; }
 
             for (const item of result.value.items) {
-                if (cancelled || collected >= MAX_RESULTS) { break; }
+                if (cancelled || collected >= maxResults) { break; }
                 if (seen.has(item.relativePath)) { continue; }
                 seen.add(item.relativePath);
                 onResult({
@@ -277,13 +284,69 @@ export function searchGlobFiles(
                 });
                 collected++;
             }
-            if (cancelled || collected >= MAX_RESULTS) { break; }
+            if (cancelled || collected >= maxResults) { break; }
         }
 
         onDone(cancelled, performance.now() - start);
     })();
 
     return () => { cancelled = true; };
+}
+
+interface GitModifiedEntry {
+    readonly relativePath: string;
+    readonly gitStatus: string;
+}
+
+const GIT_MODIFIED_CACHE_TTL_MS = 5000;
+let gitModifiedCache: { workspacePath: string; entries: GitModifiedEntry[]; timestamp: number } | undefined;
+
+function parseGitStatusCode(x: string, y: string): string {
+    if (x === '?' || y === '?') { return 'untracked'; }
+    if (x === 'A' || y === 'A') { return 'added'; }
+    return 'modified';
+}
+
+/**
+ * Modified files via `git status --porcelain` — async (never blocks the
+ * extension host) and enumerates only changed files, so it stays correct on
+ * repos far larger than fff's glob page size.
+ */
+async function listGitModifiedFiles(workspacePath: string): Promise<GitModifiedEntry[]> {
+    const { stdout } = await execFileAsync('git', ['status', '--porcelain=v1', '-z', '--untracked-files=normal'], {
+        cwd: workspacePath,
+        encoding: 'utf-8',
+        maxBuffer: 64 * 1024 * 1024,
+    });
+
+    const fields = stdout.split('\0');
+    const entries: GitModifiedEntry[] = [];
+    for (let i = 0; i < fields.length; i++) {
+        const field = fields[i];
+        if (!field || field.length < 4) { continue; }
+        const x = field.charAt(0);
+        const y = field.charAt(1);
+        const relativePath = field.slice(3);
+        // Never list Seeky's own runtime databases.
+        if (relativePath.startsWith('.vscode/seeky/')) { continue; }
+        entries.push({ relativePath, gitStatus: parseGitStatusCode(x, y) });
+        // Renames/copies carry the source path as a second NUL-separated field.
+        if (x === 'R' || x === 'C') { i++; }
+    }
+    return entries;
+}
+
+/** Pre-git fallback: enumerate the index via fff and filter by git status. */
+async function listGitModifiedFilesViaFff(finder: FileFinder): Promise<GitModifiedEntry[]> {
+    const result = finder.glob("**", { pageSize: 10000 });
+    if (!result.ok) { return []; }
+    const entries: GitModifiedEntry[] = [];
+    for (const item of result.value.items) {
+        if (!item.gitStatus || item.gitStatus === 'clean' || item.gitStatus === 'ignored') { continue; }
+        if (item.relativePath.startsWith('.vscode/seeky/')) { continue; }
+        entries.push({ relativePath: item.relativePath, gitStatus: item.gitStatus });
+    }
+    return entries;
 }
 
 export function searchGitModifiedFiles(
@@ -306,24 +369,37 @@ export function searchGitModifiedFiles(
         const start = performance.now();
 
         try {
-            const normalizedQuery = query.trim().toLowerCase();
-            // Use a moderate pageSize — avoids requesting 100k items at once.
-            const result = finder.glob("**", { pageSize: 10000 });
-            if (!result.ok) { onDone(false, performance.now() - start); return; }
+            // Refresh the modified-file list at most once per TTL; per-keystroke
+            // searches filter the cached list in memory instead of re-enumerating
+            // the whole workspace on every keypress.
+            const now = Date.now();
+            if (!gitModifiedCache
+                || gitModifiedCache.workspacePath !== workspacePath
+                || now - gitModifiedCache.timestamp > GIT_MODIFIED_CACHE_TTL_MS) {
+                let entries: GitModifiedEntry[];
+                try {
+                    entries = await listGitModifiedFiles(workspacePath);
+                } catch {
+                    // No git binary / not a repository — fall back to the fff index.
+                    entries = await listGitModifiedFilesViaFff(finder);
+                }
+                gitModifiedCache = { workspacePath, entries, timestamp: Date.now() };
+            }
+            if (cancelled) { onDone(cancelled); return; }
 
+            const normalizedQuery = query.trim().toLowerCase();
+            const maxResults = getMaxResults();
             let collected = 0;
-            for (const item of result.value.items) {
-                if (cancelled || collected >= MAX_RESULTS) break;
-                if (!item.gitStatus || item.gitStatus === 'clean' || item.gitStatus === 'ignored') continue;
-                if (normalizedQuery && !item.relativePath.toLowerCase().includes(normalizedQuery)) continue;
+            for (const entry of gitModifiedCache.entries) {
+                if (cancelled || collected >= maxResults) break;
+                if (normalizedQuery && !entry.relativePath.toLowerCase().includes(normalizedQuery)) continue;
 
                 onResult({
                     type: 'file',
-                    file: join(workspacePath, item.relativePath),
-                    relativePath: item.relativePath,
+                    file: join(workspacePath, entry.relativePath),
+                    relativePath: entry.relativePath,
                     source: 'git-modified',
-                    gitStatus: item.gitStatus,
-                    frecencyScore: item.totalFrecencyScore ?? 0,
+                    gitStatus: entry.gitStatus,
                 });
                 collected++;
             }
@@ -359,7 +435,7 @@ export function searchFiles(
 
         const start = performance.now();
         const result = finder.fileSearch(query, {
-            pageSize: MAX_RESULTS,
+            pageSize: getMaxResults(),
             ...(currentFile ? { currentFile } : {})
         });
         const duration = performance.now() - start;
@@ -436,15 +512,55 @@ function escapeHtml(str: string) {
     return str.replace(/[&<>"']/g, c => map[c] || c);
 }
 
+const BINARY_SNIFF_BYTES = 8192;
+const MAX_PREVIEW_LINE_LENGTH = 2000;
+
+/**
+ * Standard binary heuristic: a NUL byte in the first chunk of the file.
+ * Fails safe (treated as text) when the file cannot be opened.
+ */
+async function isBinaryFile(filePath: string, fileSize: number): Promise<boolean> {
+    if (fileSize === 0) {
+        return false;
+    }
+    let handle: fsPromises.FileHandle | undefined;
+    try {
+        handle = await fsPromises.open(filePath, 'r');
+        const buffer = Buffer.alloc(Math.min(BINARY_SNIFF_BYTES, fileSize));
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+        return buffer.subarray(0, bytesRead).includes(0);
+    } catch {
+        return false;
+    } finally {
+        await handle?.close();
+    }
+}
+
 export async function readFilePreview(
     filePath: string,
     targetLine: number,
     gitStatus?: string,
     contextLines = 35
-): Promise<{ content: string; startLine: number; stats?: { size: number; mtime: number; gitStatus?: string } }> {
+): Promise<{ content: string; startLine: number; binary?: boolean; stats?: { size: number; mtime: number; gitStatus?: string } }> {
 
     try {
         const stats = await fsPromises.stat(filePath);
+
+        // Binary sniff: NUL byte in the first chunk. Reading a binary file
+        // line-by-line and feeding it to Shiki can stall the extension host.
+        if (await isBinaryFile(filePath, stats.size)) {
+            return {
+                content: '',
+                startLine: 1,
+                binary: true,
+                stats: {
+                    size: stats.size,
+                    mtime: stats.mtimeMs,
+                    ...(gitStatus !== undefined ? { gitStatus } : {})
+                }
+            };
+        }
+
         const startLine = Math.max(1, targetLine - contextLines);
         const endLine = targetLine + contextLines;
 
@@ -455,7 +571,11 @@ export async function readFilePreview(
         let currentLine = 1;
         for await (const line of rl) {
             if (currentLine >= startLine && currentLine <= endLine) {
-                lines.push(line);
+                // Truncate pathological lines (minified bundles) — highlighting a
+                // multi-MB single line can stall the extension host.
+                lines.push(line.length > MAX_PREVIEW_LINE_LENGTH
+                    ? `${line.slice(0, MAX_PREVIEW_LINE_LENGTH)} …`
+                    : line);
             }
             if (currentLine > endLine) {
                 rl.close();
@@ -485,7 +605,7 @@ export async function readGitDiffPreview(
     filePath: string,
     workspacePath: string,
     gitStatus?: string
-): Promise<{ content: string; startLine: number; stats?: { size: number; mtime: number; gitStatus?: string } }> {
+): Promise<{ content: string; startLine: number; binary?: boolean; stats?: { size: number; mtime: number; gitStatus?: string } }> {
     let stats: { size: number; mtime: number; gitStatus?: string } | undefined;
     try {
         const fileStats = await fsPromises.stat(filePath);
@@ -543,6 +663,7 @@ export async function readGitDiffPreview(
     return {
         content: fallback.content,
         startLine: 1,
+        ...(fallback.binary ? { binary: true } : {}),
         ...(fallback.stats ? { stats: fallback.stats } : {}),
     };
 }

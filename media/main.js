@@ -22,6 +22,7 @@
     const statusMode = /** @type {HTMLElement} */ (document.getElementById('status-mode'));
     const colResizer = /** @type {HTMLElement} */ (document.getElementById('col-resizer'));
     const resultsCol = /** @type {HTMLElement} */ (document.getElementById('results-col'));
+    const hostBusyBanner = /** @type {HTMLElement} */ (document.getElementById('host-busy-banner'));
 
     // Create Vim Block Cursor
     const vimCursor = document.createElement('div');
@@ -40,6 +41,7 @@
     let navItems = [];
     const history = [];
     let lastEscapeTimestamp = 0;
+    let hostBusyTimeout = null;
 
     const DOUBLE_ESCAPE_WINDOW_MS = 380;
 
@@ -257,7 +259,17 @@
             if (history.length > 50) history.pop();
         }
         resultCount.textContent = '...';
-        vscode.postMessage({ command: 'search', query, mode: currentMode, grepMode: grepConfig.grepMode });
+        resultCount.removeAttribute('title');
+        // If no results arrive soon, the extension host's event loop is blocked
+        // (usually by another extension) and the message is sitting in the IPC
+        // queue — say so instead of looking dead. Cleared in renderResults.
+        if (hostBusyTimeout) clearTimeout(hostBusyTimeout);
+        hostBusyTimeout = setTimeout(() => {
+            resultCount.textContent = 'host busy…';
+            resultCount.title = 'VS Code is not processing messages — another extension is blocking the extension host. The search is queued and will run when it recovers.';
+            if (hostBusyBanner) hostBusyBanner.classList.add('visible');
+        }, 1500);
+        vscode.postMessage({ command: 'search', query, mode: currentMode, grepMode: grepConfig.grepMode, sentAt: Date.now() });
     }
 
     function highlightRanges(text, ranges) {
@@ -289,6 +301,9 @@
 
     // ── Render Results ────────────────────────────────────────────────────────
     function renderResults(items, capped = false) {
+        if (hostBusyTimeout) { clearTimeout(hostBusyTimeout); hostBusyTimeout = null; }
+        resultCount.removeAttribute('title');
+        if (hostBusyBanner) hostBusyBanner.classList.remove('visible');
         navItems = [];
 
         if (items.length === 0) {
@@ -510,13 +525,14 @@
             return;
         }
 
-        if (!data.content) {
+        if (data.binary) {
+            previewContent.innerHTML = `<div class="binary-note"><i class="codicon codicon-file-binary"></i><span>Binary file — no preview</span></div>`;
+        } else if (!data.content) {
             previewContent.innerHTML = ``;
             return;
-        }
-
+        } else {
         const lines = data.content.split('\n');
-        const isDiff = data.content.startsWith('diff --git') || /^(---|\\+\\+\\+) /.test(data.content);
+        const isDiff = data.content.startsWith('diff --git') || /^(---|\+\+\+) /.test(data.content);
         let html = ``;
         for (let i = 0; i < lines.length; i++) {
             const lineNum = data.startLine + i;
@@ -545,6 +561,17 @@
             }
         }
         previewContent.innerHTML = html;
+        }
+
+        // Highlight the found text inside the matched line. Walks text nodes
+        // only, so Shiki token spans are never broken by the insertion.
+        if (currentMode === 'grep' || currentMode === 'symbols' || currentMode === 'workspace-symbols') {
+            const matchedEl = previewContent.querySelector('.preview-line.matched');
+            const queryText = currentMode === 'grep' ? parseGrepQuery(searchInput.value).searchQuery : searchInput.value;
+            if (matchedEl && queryText.trim()) {
+                highlightFirstTextMatch(matchedEl, queryText.trim());
+            }
+        }
 
         // Render preview ribbon stats
         const badgeGit = document.getElementById('badge-git');
@@ -701,6 +728,27 @@
                 break;
         }
     });
+
+    // Wrap the first occurrence of `query` (case-insensitive) inside `root`
+    // in a <mark>. Text-node only: never splits an HTML tag.
+    function highlightFirstTextMatch(root, query) {
+        const lowerQuery = query.toLowerCase();
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        const textNodes = [];
+        while (walker.nextNode()) { textNodes.push(walker.currentNode); }
+        for (const node of textNodes) {
+            const value = node.nodeValue || '';
+            const idx = value.toLowerCase().indexOf(lowerQuery);
+            if (idx === -1) { continue; }
+            const matchNode = node.splitText(idx);
+            matchNode.splitText(query.length);
+            const mark = document.createElement('mark');
+            mark.className = 'fuzzy-match';
+            mark.textContent = matchNode.nodeValue;
+            matchNode.parentNode.replaceChild(mark, matchNode);
+            return;
+        }
+    }
 
     // ── Utils ─────────────────────────────────────────────────────────────────
     function getSymbolIcon(kind) {
