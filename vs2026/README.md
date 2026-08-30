@@ -140,6 +140,14 @@ same — these failures are all silent or cryptic without instrumentation.
    the pump thread.** Searches, workspace refresh, and history run via `Task.Run`; all page
    posts are marshaled back through the pump's work queue (`PostJson`). The pump/fff watchdogs
    (heartbeat + 5s native-call hang detector) stay in the build to localize any future stall.
+9. **An install-scoped copy silently shadows F5 (the "my changes do nothing" bug).** Symptom: F5
+   builds, deploys and launches, but the running extension is the previous build — breakpoints do
+   not bind and edits have no effect, with no error anywhere. Cause: a copy in
+   `<VS install>\Common7\IDE\VSExtensions` loads into *every* hive and outranks the one F5
+   registers in `…Exp`. **Double-clicking the VSIX puts it there** — the shell routes `.vsix` to
+   the elevated VS Setup engine, which installs it as a `Component.SeekyVS.…` setup package (see
+   "Installing"). Use `deploy.ps1`, which is hive-scoped and coexists with F5, and which aborts if
+   it finds an install-scoped copy of this extension.
 
 ## What was built and verified
 
@@ -394,10 +402,13 @@ Remaining:
    equivalents in the out-of-proc SDK) pushed into the page as CSS variables — mirrors what
    `media/style.css` does with VS Code theme variables. Note that adopting VS theming would mean
    dropping the phosphor look, so this is now a choice rather than a gap.
-2. **Chromeless UX details.** No drag move (would need `WM_NCHITTEST` handling), no resize, no
-   border. The window inherits the host process's DPI awareness (likely system-aware); per-monitor
-   V2 would need a manifest we don't control or `SetProcessDpiAwarenessContext` — untested on
-   multi-DPI setups.
+2. **Chromeless UX details.** No drag move and no *mouse* resize. Both would need `WS_THICKFRAME`
+   plus `WM_NCHITTEST` handling, and the grab region is the problem: the WebView2 child covers the
+   client area inset by `BorderWidth` (2px), and mouse messages over a child never reach the
+   parent's hit-test — so the only grabbable strip is the 2px accent ring. Sizing is therefore
+   keyboard-only (Ctrl+Shift+±/0, persisted per solution). The window inherits the host process's
+   DPI awareness (likely system-aware); per-monitor V2 would need a manifest we don't control or
+   `SetProcessDpiAwarenessContext` — untested on multi-DPI setups.
 3. **Focus corner cases.** The verified run had focus land correctly, but `SetForegroundWindow`
    from a non-foreground process is restricted by Windows — re-show/activation when VS was not
    foreground may still flash instead of focusing. Watch for it in real use.
@@ -415,40 +426,126 @@ dotnet build -c Release
 
 Requires only a .NET SDK (8+; repo pins 10.0.302 via `global.json`). No Visual Studio needed.
 
-## Installing (daily use) — VSIXInstaller does NOT work
+## Installing (daily use) — scope is the only thing that matters
 
-**`VSIXInstaller.exe` cannot install this extension.** It fails with:
+Out-of-proc VS 2026 extensions are installed by unzipping the VSIX into a hive and registering it
+with `Microsoft.VisualStudio.Extensibility.Finalizer.exe` — which is exactly what VS's own Deploy
+does (watch the Output → Build pane during F5). **Where** it lands is what decides whether your
+daily copy and F5 collide:
 
-> `Cannot install a VisualStudio.Extensibility extension using the install call. Must unzip and
-> call the finalizer instead.`
-
-Out-of-proc VS 2026 extensions are installed by unzipping the VSIX into the target hive and
-registering it with `Microsoft.VisualStudio.Extensibility.Finalizer.exe` — which is exactly what
-VS's own Deploy does (watch the Output → Build pane during F5). The finalizer's flags decide the
-**scope**, and scope is what determines whether your daily copy and F5 collide:
-
-| finalizer flag | installs into | notes |
+| scope | lands in | effect |
 | --- | --- | --- |
-| *(none)* | `%LOCALAPPDATA%\…\18.0_<id>\VSExtensions` | main instance — **use this for daily use** |
-| `--RootSuffix Exp` | `…\18.0_<id>Exp\VSExtensions` | experimental hive — **F5 owns this; it wipes it** |
-| `--PerMachine` | `<VS install>\Common7\IDE\VSExtensions` | install-scoped: loads into **every** hive |
+| hive-scoped, main | `%LOCALAPPDATA%\…\18.0_<id>\VSExtensions` | daily use — **safe alongside F5** |
+| hive-scoped, Exp | `…\18.0_<id>Exp\VSExtensions` | **F5 owns this; it wipes it** |
+| install-scoped | `<VS install>\Common7\IDE\VSExtensions` | loads into **every** hive — **the trap** |
 
-`--PerMachine` is the trap. An install-scoped copy loads into every instance *including* the
-experimental one and outranks the hive-scoped copy F5 registers, so it silently shadows the build
-you are debugging — with no error anywhere. Running `VSIXInstaller /admin` (or elevated) lands
-here. Never install this extension per-machine while developing it.
+**The trap: an install-scoped copy outranks the hive-scoped one F5 registers**, so F5 deploys your
+new build to the experimental hive, VS loads the per-machine copy instead, and you debug code that
+is not the code you just built. There is no error anywhere — breakpoints simply behave as though
+your changes never happened. Hive-scoped copies do *not* shadow each other: a main-hive install and
+an F5 deploy to `…Exp` coexist fine, which is why `deploy.ps1` below is safe to leave installed.
 
-Install for daily use — **close all VS instances first, and do not elevate**:
+### Double-clicking the VSIX installs it install-scoped
+
+It **works** — but it is the trap. Double-click does not go through `VSIXInstaller`; the shell
+hands `.vsix` to `VSLauncher.exe`, which routes to the **VS Setup engine**, elevated. From
+`%TEMP%\dd_installer_elevated_*.log` on a real run:
+
+```
+setup.exe elevate --installPath "C:\Program Files\Microsoft Visual Studio\18\Community"
+Added extension 'Component.SeekyVS.3f6b2d8a-…,version=1.6.0.0'
+  to product 'Microsoft.VisualStudio.Product.Community,version=18.8.12021.73'
+```
+
+So it registers as a **VS setup component**, per-machine, unpacked into
+`<VS install>\Common7\IDE\VSExtensions\<opaque-name>` (the setup engine assigns names like
+`5ngh5dlq.0g0`; anything in there that is not `Microsoft` is install-scoped). `vswhere -include
+packages` then lists it as `Component.SeekyVS.…`, and `deploy.ps1` refuses to run.
+
+Double-click is therefore fine for **daily use on a machine where you are not developing Seeky**,
+and wrong everywhere else. Use `deploy.ps1` instead — same result, hive-scoped, no elevation, and
+it coexists with F5.
+
+> An older note here claimed `VSIXInstaller.exe` refuses this extension type with *"Cannot install
+> a VisualStudio.Extensibility extension using the install call. Must unzip and call the finalizer
+> instead."* That error is real for a direct `VSIXInstaller.exe` invocation, but it is **not** what
+> double-click does, and it does not mean the VSIX cannot be installed by hand. Scope, not
+> installability, is the thing to reason about.
+
+### Recovering from an install-scoped copy
+
+Symptom: F5 deploys and launches, but your changes have no effect and breakpoints do not bind.
 
 ```powershell
-$version = '1.6.0.0'                       # must match <Version> in SeekyVS.csproj
+# 1. Is it there?
+Get-ChildItem 'C:\Program Files\Microsoft Visual Studio\18\*\Common7\IDE\VSExtensions' -Directory |
+    Where-Object Name -ne 'Microsoft'
+& "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -prerelease -all `
+    -format json -include packages | ConvertFrom-Json |
+    ForEach-Object { $_.packages | Where-Object id -like '*SeekyVS*' }
+
+# 2. Remove it — elevated, VS closed. Either the VS Installer UI (Modify -> uncheck the
+#    component), or the finalizer directly:
+& '<VS install>\Common7\IDE\Microsoft.VisualStudio.Extensibility.Finalizer.exe' `
+    --ExtensionOperations '<that opaque dir>;uninstall' --PerMachine
+```
+
+Then re-deploy hive-scoped with `deploy.ps1`.
+
+### Use `deploy.ps1` (close all VS instances first, and do not elevate)
+
+```powershell
+cd vs2026
+.\deploy.ps1                                  # build Release + install into every VS 2026 instance
+.\deploy.ps1 -InstanceId cfa335b4 -NoBuild    # current build, Insiders only
+.\deploy.ps1 -Uninstall                       # remove every installed version
+```
+
+or off a build, which is the same thing via MSBuild:
+
+```bash
+dotnet build SeekyVS/SeekyVS.csproj -c Release -t:Deploy
+```
+
+The `Deploy` target is deliberately **not** hooked to `AfterTargets="Build"`. F5 builds this
+project too, and rewriting the main hive in the middle of a debug session is precisely the kind of
+surprise this section exists to prevent.
+
+`deploy.ps1` reads the version, publisher and display name out of the built VSIX's
+`extension.vsixmanifest`, so **a version bump needs no edit anywhere** — the install path is
+`VSExtensions\<Publisher>\<DisplayName>\<Version>`. It also:
+
+- refuses to run while `devenv` is alive (the finalizer writes into hives VS has open);
+- **aborts if it finds an install-scoped copy** in `<VS>\Common7\IDE\VSExtensions`, because that
+  shadows F5 (see the trap above) and no deployment on top of it will behave;
+- **unregisters every previously installed version**, not just the one being replaced. This is the
+  step a plain re-extract cannot do: a version bump changes the directory name, so the old version
+  stays registered next to the new one. `1.6.0.0` and `1.7.0.0` both live under
+  `…\VSExtensions\knilecrack\Seeky\` unless the old one is explicitly uninstalled;
+- prints the scope check at the end — hive-scoped populated, install-scoped empty.
+
+### Doing it by hand
+
+Same three moves, if you would rather not run the script. Uninstall each existing version, extract,
+register:
+
+```powershell
 $instance = 'cfa335b4'                     # see: vswhere -prerelease -all -format json
 $ide  = 'C:\Program Files\Microsoft Visual Studio\18\Insiders\Common7\IDE'
+$root = "$env:LOCALAPPDATA\Microsoft\VisualStudio\18.0_$instance\VSExtensions\knilecrack\Seeky"
 $vsix = "O:\repos\knilecrack\Seeky\vs2026\SeekyVS\bin\Release\net10.0-windows10.0.19041.0\SeekyVS.vsix"
-$dest = "$env:LOCALAPPDATA\Microsoft\VisualStudio\18.0_$instance\VSExtensions\knilecrack\Seeky\$version"
+$version = '1.7.0.0'                       # 4-part, matches <Version> in SeekyVS.csproj
 
 if (Get-Process devenv -ErrorAction SilentlyContinue) { throw 'Close Visual Studio first.' }
-if ([IO.Directory]::Exists($dest)) { [IO.Directory]::Delete($dest, $true) }
+
+# Every installed version, or the old one stays registered beside the new one.
+Get-ChildItem $root -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+    & "$ide\Microsoft.VisualStudio.Extensibility.Finalizer.exe" `
+        --ExtensionOperations "$($_.FullName);uninstall" --InstanceId $instance
+    [IO.Directory]::Delete($_.FullName, $true)
+}
+
+$dest = Join-Path $root $version
 [IO.Directory]::CreateDirectory($dest) | Out-Null
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 [IO.Compression.ZipFile]::ExtractToDirectory($vsix, $dest)
@@ -457,11 +554,11 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
     --ExtensionOperations "$dest;install" --InstanceId $instance
 ```
 
-Uninstall is the same call with `;uninstall`. To verify scope afterwards, this must list the
-extension under the main hive and print nothing under the VS install directory:
+To verify scope afterwards, this must list the extension under the main hive and print nothing
+under the VS install directory:
 
 ```powershell
-Get-ChildItem "$env:LOCALAPPDATA\Microsoft\VisualStudio\18.0_cfa335b4\VSExtensions\knilecrack\Seeky" -Directory
+Get-ChildItem $root -Directory
 Get-ChildItem "$ide\VSExtensions" -Directory | Where-Object Name -ne 'Microsoft'
 ```
 

@@ -11,7 +11,7 @@
     <AssemblyName>SeekyVS</AssemblyName>
     <!-- VSIX identity version (flows via ExtensionAssemblyVersion into the manifest) —
          bump on every release so VS offers the update. -->
-    <Version>1.6.0</Version>
+    <Version>1.7.0</Version>
     <!-- LibraryImport source-generated P/Invoke (FffNativeClient) requires unsafe code. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- The windows10.0.19041.0 TFM implicitly references the C#/WinRT projection
@@ -52,6 +52,25 @@
   <ItemGroup>
     <Content Include="Tools\fff_c.dll" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+
+  <!--
+    Install the built VSIX into the main hive of every VS 2026 instance:
+
+        dotnet build SeekyVS/SeekyVS.csproj -c Release -t:Deploy
+
+    Deliberately NOT hooked to AfterTargets="Build". A plain build has to stay side-effect free —
+    F5 builds this project too, and rewriting the main hive mid-debug-session is exactly the kind
+    of surprise that costs an evening. deploy.ps1 passes -NoBuild because the target already
+    depends on Build.
+  -->
+  <Target Name="Deploy" DependsOnTargets="Build">
+    <PropertyGroup>
+      <_SeekyPwsh Condition=" '$(_SeekyPwsh)' == '' AND Exists('$(ProgramW6432)\PowerShell\7\pwsh.exe') ">$(ProgramW6432)\PowerShell\7\pwsh.exe</_SeekyPwsh>
+      <_SeekyPwsh Condition=" '$(_SeekyPwsh)' == '' ">powershell.exe</_SeekyPwsh>
+    </PropertyGroup>
+    <Exec Command="&quot;$(_SeekyPwsh)&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)..\deploy.ps1&quot; -Configuration $(Configuration) -NoBuild"
+          WorkingDirectory="$(MSBuildThisFileDirectory).." />
+  </Target>
 
   <!--
     Ship SeekyVS.pdb inside the VSIX for Debug builds. F5 deploys by unzipping the VSIX, and
