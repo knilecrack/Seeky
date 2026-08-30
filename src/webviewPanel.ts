@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { log } from './logger';
 import type { FFSearchResult } from './searchProvider';
 import {
     parseGlobOnlyQuery,
@@ -8,6 +9,7 @@ import {
     searchGitModifiedFiles,
     searchGlobFiles,
     searchGrep,
+    trackQuerySelection,
 } from './searchProvider';
 
 export type SearchMode = 'grep' | 'files' | 'git-modified' | 'recent' | 'buffers' | 'symbols' | 'workspace-symbols';
@@ -94,6 +96,24 @@ function getHtmlContent(
             background: var(--bg-outer) !important;
             font-family: ${fontFamily};
         }
+
+        /* In-your-face warning when the extension host stops processing messages
+           (usually another extension blocking the event loop). Toggled from main.js. */
+        #host-busy-banner {
+            display: none;
+            align-items: center;
+            gap: 8px;
+            margin: 6px 6px 0 6px;
+            padding: 8px 12px;
+            border: 1px solid var(--vscode-inputValidation-errorBorder, #be1100);
+            border-radius: 4px;
+            background: var(--vscode-inputValidation-errorBackground, #5a1d1d);
+            color: var(--vscode-errorForeground, #f48771);
+            font-weight: 700;
+            font-size: 12px;
+        }
+        #host-busy-banner.visible { display: flex; animation: seeky-busy-pulse 1.2s ease-in-out infinite; }
+        @keyframes seeky-busy-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
     </style>
 </head>
 <body data-layout="${layout}">
@@ -160,6 +180,10 @@ function getHtmlContent(
         <div id="content-area">
             <!-- Results List -->
             <div id="results-col">
+                <div id="host-busy-banner">
+                    <i class="codicon codicon-warning"></i>
+                    <span>Extension host busy — another extension is blocking VS Code. Your search is queued and will run when it recovers.</span>
+                </div>
                 <div id="results-list" class="flex-1 overflow-y-auto relative">
                     <div id="results-content" class="w-full"></div>
                 </div>
@@ -224,6 +248,7 @@ function getHtmlContent(
 class SeekyWebviewController {
     private cancelSearch: (() => void) | undefined;
     private previewCounter = 0;
+    private lastQuery = '';
 
     constructor(private readonly options: SeekyWebviewControllerOptions) { }
 
@@ -238,7 +263,8 @@ class SeekyWebviewController {
                 await this.runSearch(
                     msg['query'] as string,
                     msg['mode'] as SearchMode,
-                    (msg['grepMode'] as GrepMode | undefined) ?? 'fuzzy'
+                    (msg['grepMode'] as GrepMode | undefined) ?? 'fuzzy',
+                    msg['sentAt'] as number | undefined
                 );
                 break;
             case 'preview':
@@ -266,8 +292,19 @@ class SeekyWebviewController {
         }
     }
 
-    private async runSearch(query: string, mode: SearchMode, grepMode: GrepMode): Promise<void> {
+    private async runSearch(query: string, mode: SearchMode, grepMode: GrepMode, sentAt?: number): Promise<void> {
         this.options.onSearchRequest?.(query, mode, grepMode);
+        this.lastQuery = query;
+
+        // The webview timestamps every search; a large gap here means the
+        // extension host's event loop was blocked (typically by another
+        // extension) and the message sat in the IPC queue.
+        if (typeof sentAt === 'number') {
+            const queueDelay = Date.now() - sentAt;
+            if (queueDelay > 1000) {
+                log.warn(`Search message processed ${Math.round(queueDelay)}ms after send — extension host was busy (another extension may be blocking it).`);
+            }
+        }
 
         this.cancelSearch?.();
         this.cancelSearch = undefined;
@@ -368,8 +405,9 @@ class SeekyWebviewController {
                     query
                 );
                 if (lspSymbols && lspSymbols.length > 0) {
+                    const maxResults = vscode.workspace.getConfiguration('seeky').get<number>('maxResults', 200);
                     for (const sym of lspSymbols) {
-                        if (items.length >= 100) break;
+                        if (items.length >= maxResults) break;
                         const filePath = sym.location.uri.fsPath;
                         items.push({
                             type: 'symbol',
@@ -445,6 +483,7 @@ class SeekyWebviewController {
             content: preview.content,
             targetLine,
             startLine: preview.startLine,
+            ...(preview.binary ? { binary: true } : {}),
             stats: preview.stats,
         });
     }
@@ -454,6 +493,10 @@ class SeekyWebviewController {
         const col = (item.type === 'grep' || item.type === 'symbol') ? item.col - 1 : 0;
         const targetColumn = options.sideBySide ? vscode.ViewColumn.Beside : this.options.getDefaultViewColumn();
         const shouldDispose = options.dispose ?? this.options.defaultDisposeOnOpen;
+
+        // Train fff's frecency ranking on the pick, same as the QuickPick flows.
+        // trackQuerySelection drops empty queries internally.
+        trackQuerySelection(this.lastQuery, item.file);
 
         if (shouldDispose) {
             this.options.beforeHostDispose?.();

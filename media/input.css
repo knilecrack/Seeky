@@ -121,11 +121,11 @@ body {
 /* ── Title Bar & Status Bar ─────────────────────────────────────────────── */
 .bar {
     background: var(--bg-deep);
-    height: 32px;
+    height: 34px;
     display: flex;
     align-items: center;
     padding: 0 12px;
-    font-size: 10.5px;
+    font-size: 11px;
     flex-shrink: 0;
 }
 
@@ -148,12 +148,12 @@ kbd {
 }
 
 .window-accent-line {
-    height: 2px;
+    height: 4px;
     width: 100%;
     background: linear-gradient(90deg, var(--accent) 0%, var(--sel-border) 50%, var(--match-fg) 100%);
-    box-shadow: 0 0 10px var(--accent);
+    box-shadow: 0 0 14px var(--accent), 0 0 4px var(--accent);
     flex-shrink: 0;
-    opacity: 0.85;
+    opacity: 1;
 }
 
 #mode-tabs-container {
@@ -174,10 +174,10 @@ kbd {
     bottom: 2px;
     left: 0px;
     width: 0px;
-    background: var(--bg-outer);
+    background: color-mix(in srgb, var(--accent) 22%, var(--bg-outer));
     border-radius: 4px;
     box-shadow: 0 1px 2px rgba(0,0,0,0.1);
-    border: 1px solid var(--border-outer);
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
     pointer-events: none;
     z-index: 1;
     transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1), width 0.2s cubic-bezier(0.4, 0, 0.2, 1);
@@ -191,10 +191,10 @@ kbd {
     outline: none;
     cursor: pointer;
     font-family: inherit;
-    font-size: 10.5px;
+    font-size: 11.5px;
     font-weight: 500;
     color: var(--text-muted);
-    padding: 0 8px;
+    padding: 0 10px;
     height: 100%;
     display: flex;
     align-items: center;
@@ -226,11 +226,11 @@ kbd {
 
 /* ── Search Input ───────────────────────────────────────────────────────── */
 #search-area {
-    height: 36px;
+    height: 52px;
     display: flex;
     align-items: center;
-    padding: 0 12px;
-    font-size: 12.5px;
+    padding: 0 14px;
+    font-size: 16px;
     border-bottom: 1px solid var(--border-inner);
     flex-shrink: 0;
     background: var(--bg-outer);
@@ -239,8 +239,12 @@ kbd {
     transition: box-shadow 0.2s ease, border-color 0.2s ease;
 }
 
+#search-area > span:first-child {
+    font-size: 20px !important;
+}
+
 #search-area:focus-within {
-    box-shadow: inset 0 -2px 0 var(--accent), 0 4px 15px rgba(0, 0, 0, 0.05);
+    box-shadow: inset 0 -3px 0 var(--accent), 0 0 24px color-mix(in srgb, var(--accent) 25%, transparent);
 }
 
 #search-input {
@@ -250,7 +254,8 @@ kbd {
     outline: none;
     color: var(--text-primary);
     font-family: inherit;
-    margin-left: 8px;
+    font-weight: 600;
+    margin-left: 10px;
 }
 
 #search-input::placeholder {
@@ -332,20 +337,20 @@ kbd {
 
 /* ── Results List ───────────────────────────────────────────────────────── */
 .result-item {
-    height: 42px;
+    height: 52px;
     padding: 0 12px;
-    margin: 3px 8px;
+    margin: 4px 8px;
     border-radius: 6px;
     display: flex;
     flex-direction: column;
     justify-content: center;
     cursor: pointer;
-    border-left: 3px solid transparent;
+    border-left: 4px solid transparent;
     transition: background-color 0.1s ease, border-left-color 0.1s ease, transform 0.15s ease;
 }
 
 .result-item-match-only {
-    height: 26px;
+    height: 30px;
     margin-top: 0;
     border-radius: 0 0 4px 4px;
     border-left-color: var(--border-outer);
@@ -366,16 +371,16 @@ kbd {
 }
 
 .result-item.selected {
-    background: var(--sel-bg);
-    border-left-color: var(--sel-border);
-    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    background: var(--accent);
+    border-left-color: var(--accent);
+    box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 45%, transparent);
 }
 
 .result-file-row {
     display: flex;
     align-items: center;
     gap: 6px;
-    font-size: 11.5px;
+    font-size: 13px;
     margin-bottom: 2px;
 }
 
@@ -389,6 +394,7 @@ kbd {
 
 .result-filename {
     color: var(--text-primary);
+    font-weight: 600;
 }
 
 .result-selected .result-filename {
@@ -397,11 +403,11 @@ kbd {
 
 .result-path {
     color: var(--text-dim);
-    font-size: 10px;
+    font-size: 11px;
 }
 
 .result-match-row {
-    font-size: 11.5px;
+    font-size: 12.5px;
     display: flex;
     gap: 6px;
     padding-left: 19px; /* icon width + gap */
@@ -422,19 +428,40 @@ kbd {
 mark.fuzzy-match {
     background: var(--match-bg);
     color: var(--match-fg);
-    font-weight: 600;
+    font-weight: 700;
     border-radius: 3px;
-    padding: 0 1px;
+    padding: 0 2px;
+}
+
+/* Selected-row inversion — after all base result styles so source order
+   matches specificity (biome noDescendingSpecificity). */
+.result-item.selected .result-filename,
+.result-item.selected .result-path,
+.result-item.selected .result-text,
+.result-item.selected .result-line-num,
+.result-item.selected .result-colon,
+.result-item.selected .result-file-icon {
+    color: var(--bg-outer);
+}
+
+.result-item.selected .result-path,
+.result-item.selected .result-text {
+    opacity: 0.85;
+}
+
+.result-item.selected mark.fuzzy-match {
+    background: var(--bg-outer);
+    color: var(--accent);
 }
 
 /* ── Preview Pane ───────────────────────────────────────────────────────── */
 #preview-header {
-    height: 28px;
+    height: 32px;
     display: flex;
     align-items: center;
     justify-content: space-between;
     padding: 0 12px;
-    font-size: 10.5px;
+    font-size: 11px;
     border-bottom: 1px solid var(--border-inner);
     background: var(--bg-deep);
 }
@@ -494,7 +521,7 @@ mark.fuzzy-match {
 
 .preview-line {
     display: flex;
-    font-size: 11.5px;
+    font-size: 12.5px;
     line-height: 1.65;
     white-space: pre;
     border-radius: 2px;
@@ -502,6 +529,12 @@ mark.fuzzy-match {
 
 .preview-line.matched {
     background: var(--match-bg);
+    box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.preview-line.matched mark.fuzzy-match {
+    background: var(--accent);
+    color: var(--bg-outer);
 }
 
 .preview-line-num {
@@ -559,6 +592,22 @@ mark.fuzzy-match {
     background: var(--bg-deep);
 }
 
+.binary-note {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    height: 100%;
+    width: 100%;
+    color: var(--text-muted);
+    font-size: 12.5px;
+    background: var(--bg-deep);
+}
+
+.binary-note i {
+    font-size: 16px !important;
+}
+
 .watermark-card {
     background: var(--bg-float);
     border: 1px solid var(--border-inner);
@@ -577,6 +626,7 @@ mark.fuzzy-match {
     margin-bottom: 12px;
     color: var(--accent);
     opacity: 0.95;
+    filter: drop-shadow(0 0 12px var(--accent));
 }
 
 .watermark-card h2 {
@@ -609,7 +659,7 @@ mark.fuzzy-match {
     border: 3px solid var(--bg-outer); 
     background-clip: padding-box;
 }
-::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-hover); }
+::-webkit-scrollbar-thumb:hover { background: var(--accent); }
 
 /* ── Vim Block Cursor ──────────────────────────────────────────────────── */
 .vim-block-cursor {
