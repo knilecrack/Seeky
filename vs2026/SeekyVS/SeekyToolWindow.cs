@@ -14,14 +14,14 @@ using Microsoft.VisualStudio.RpcContracts.RemoteUI;
 [VisualStudioContribution]
 public class SeekyToolWindow : ToolWindow
 {
-    private readonly SeekyToolWindowContent content = new(dataContext: null);
+    private readonly SeekyToolWindowContent _content = new(dataContext: null);
 
     /// <summary>
     /// Initializes a new instance of the <see cref="SeekyToolWindow"/> class.
     /// </summary>
     public SeekyToolWindow()
     {
-        this.Title = "Seeky";
+        Title = "Seeky";
     }
 
     /// <inheritdoc />
@@ -35,7 +35,7 @@ public class SeekyToolWindow : ToolWindow
     /// <inheritdoc />
     public override Task<IRemoteUserControl> GetContentAsync(CancellationToken cancellationToken)
     {
-        return Task.FromResult<IRemoteUserControl>(this.content);
+        return Task.FromResult<IRemoteUserControl>(_content);
     }
 
     /// <inheritdoc />
@@ -43,7 +43,7 @@ public class SeekyToolWindow : ToolWindow
     {
         if (disposing)
         {
-            this.content.Dispose();
+            _content.Dispose();
         }
 
         base.Dispose(disposing);
