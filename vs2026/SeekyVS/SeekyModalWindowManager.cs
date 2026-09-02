@@ -103,6 +103,13 @@ internal static class SeekyModalWindowManager
 
     /// <summary>Prompt text to open with, from Grep Word Under Cursor; null for every other command.</summary>
     private static string? requestedQuery;
+
+    /// <summary>
+    /// The editor snapshot behind a Document Outline show, captured by
+    /// <see cref="SeekySymbolPathCommand"/> before the popup took focus; null for every other
+    /// command.
+    /// </summary>
+    private static SymbolPathRequest? requestedPath;
     private static int searchGeneration;
     private static CancellationTokenSource? searchCancellation;
     private static string lastSearchQuery = string.Empty;
@@ -112,25 +119,30 @@ internal static class SeekyModalWindowManager
     /// </summary>
     /// <param name="extensibility">The extensibility object (for workspaces/documents APIs).</param>
     /// <param name="clientContext">The command's client context (fallback workspace source).</param>
-    /// <param name="mode">Picker mode the page should start in: "files", "grep", or "git".</param>
+    /// <param name="mode">Picker mode the page should start in: "files", "grep", "git", "symbols", or "path".</param>
     /// <param name="initialQuery">
     /// Pre-fills the prompt and searches immediately (Grep Word Under Cursor). Null leaves the
     /// prompt empty, which is what every other command wants.
+    /// </param>
+    /// <param name="pathRequest">
+    /// The caret snapshot for "path" mode (Seeky: Symbol Path); null for every other mode.
     /// </param>
     /// <returns>A task completing when the show request has been processed on the UI thread.</returns>
     public static Task ShowAsync(
         VisualStudioExtensibility extensibility,
         IClientContext clientContext,
         string mode,
-        string? initialQuery = null)
+        string? initialQuery = null,
+        SymbolPathRequest? pathRequest = null)
     {
         SeekyModalWindowManager.extensibility = extensibility;
         lastClientContext = clientContext;
-        requestedMode = mode is "files" or "grep" or "git" or "dirs" or "symbols" ? mode : "files";
+        requestedMode = mode is "files" or "grep" or "git" or "dirs" or "symbols" or "path" ? mode : "files";
 
         // Set on every show, so a plain Live Grep after a Grep Word clears it rather than
         // inheriting the previous command's term.
         requestedQuery = initialQuery;
+        requestedPath = pathRequest;
         EnsureUiThread();
         SeekyLog.Info($"ShowAsync (mode={requestedMode}): enqueueing ShowCore on UI thread");
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -995,6 +1007,24 @@ internal static class SeekyModalWindowManager
             cancellationToken);
     }
 
+    /// <summary>
+    /// <paramref name="fullPath"/> relative to the workspace ('/' separators), or the full path
+    /// unchanged when there is no workspace or the file sits outside it — Path.Combine in the
+    /// preview/open handlers passes rooted paths through, so an absolute path still works.
+    /// </summary>
+    private static string RelativeToWorkspace(string fullPath)
+    {
+        if (workspaceDir is null || fullPath.Length == 0)
+        {
+            return fullPath;
+        }
+
+        string prefix = workspaceDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        return fullPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+            ? fullPath[prefix.Length..].Replace(Path.DirectorySeparatorChar, '/')
+            : fullPath;
+    }
+
     /// <summary>Posts past queries (fff history LMDB, populated by track_query picks) to the
     /// page for ↑ history cycling. Best-effort; history is empty until the first picks.</summary>
     private static async Task PostHistoryAsync()
@@ -1048,6 +1078,9 @@ internal static class SeekyModalWindowManager
                 }
             }
 
+            // workspaceDir resolution falls back to the active document's directory, so a
+            // Symbol Path show (which requires an active editor) always has one — the guard
+            // covers path mode too.
             if (workspaceDir is null)
             {
                 PostStatus("no workspace open — open a solution or a file");
@@ -1055,11 +1088,50 @@ internal static class SeekyModalWindowManager
             }
 
             // No-op when already indexed; restarts the index if the workspace changed.
-            await FffClient.StartAsync(workspaceDir, PostStatus, cancellationToken);
+            // Document Outline answers from the command's editor snapshot — no fff involved.
+            if (mode != "path")
+            {
+                await FffClient.StartAsync(workspaceDir, PostStatus, cancellationToken);
+            }
 
             const int maxResults = 100;
             List<object> items;
-            if (mode == "grep")
+            int? selectedIndex = null;
+            if (mode == "path")
+            {
+                // Document Outline: the declarations were classified by the command at invoke
+                // time (the caret is gone once the popup owns focus). Empty query lists the
+                // whole file with the caret's symbol preselected; typing fuzzy-filters by name.
+                SymbolPathRequest? pathRequest = requestedPath;
+                if (pathRequest is null || pathRequest.Outline.Count == 0)
+                {
+                    items = new List<object>();
+                    PostStatus(pathRequest is null ? "no editor was active" : "no symbols in this document");
+                }
+                else
+                {
+                    string displayPath = RelativeToWorkspace(pathRequest.DocumentPath);
+                    items = OutlineItems(pathRequest.Outline, displayPath, query, maxResults);
+
+                    if (query.Length == 0)
+                    {
+                        // File-bottom-first ordering (see OutlineItems): the enclosing symbol's
+                        // index flips around the list's midpoint.
+                        List<SymbolOutline.Entry> chain =
+                            SymbolOutline.ChainAt(pathRequest.Outline, pathRequest.CaretLine);
+                        if (chain.Count > 0)
+                        {
+                            SymbolOutline.Entry current = chain[^1];
+                            int fileOrder = IndexOfEntry(pathRequest.Outline, current);
+                            if (fileOrder >= 0)
+                            {
+                                selectedIndex = pathRequest.Outline.Count - 1 - fileOrder;
+                            }
+                        }
+                    }
+                }
+            }
+            else if (mode == "grep")
             {
                 // Live-grep with an empty query matches everything — show nothing instead.
                 if (string.IsNullOrWhiteSpace(query))
@@ -1185,9 +1257,12 @@ internal static class SeekyModalWindowManager
             {
                 type = "results",
                 done = true,
-                capped = items.Count >= maxResults,
+
+                // A full document outline legitimately exceeds maxResults — it isn't capped.
+                capped = mode == "path" && query.Length == 0 ? false : items.Count >= maxResults,
                 duration = stopwatch.ElapsedMilliseconds,
                 items,
+                selectedIndex,
             });
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -1203,6 +1278,75 @@ internal static class SeekyModalWindowManager
         {
             _ = Interlocked.CompareExchange(ref searchCancellation, null, searchTokenSource);
         }
+    }
+
+    /// <summary>
+    /// Document-outline rows for "path" mode. Empty query: the whole file, file-bottom-first —
+    /// the page renders index 0 as the bottom row next to the prompt, so the file reads
+    /// top-to-bottom on screen. Non-empty query: fuzzy name filter, best match at index 0.
+    /// </summary>
+    private static List<object> OutlineItems(
+        IReadOnlyList<SymbolOutline.Entry> outline, string displayPath, string query, int maxResults)
+    {
+        if (query.Length == 0)
+        {
+            return outline
+                .Reverse<SymbolOutline.Entry>()
+                .Select(e => OutlineItem(e, displayPath, Array.Empty<int[]>()))
+                .ToList();
+        }
+
+        var scored = new List<(SymbolOutline.Entry Entry, int Score, SeekyRange[] Ranges)>();
+        foreach (SymbolOutline.Entry entry in outline)
+        {
+            if (FuzzyMatcher.TryMatch(query, entry.Name, out int score, out (int Start, int End)[] ranges))
+            {
+                scored.Add((entry, score, ranges.Select(r => new SeekyRange(r.Start, r.End)).ToArray()));
+            }
+        }
+
+        scored.Sort(static (a, b) =>
+        {
+            int byScore = b.Score.CompareTo(a.Score);
+            return byScore != 0 ? byScore : a.Entry.Line.CompareTo(b.Entry.Line);
+        });
+
+        return scored
+            .Take(maxResults)
+            .Select(h => OutlineItem(
+                h.Entry, displayPath, h.Ranges.Select(r => new[] { r.Start, r.End }).ToArray()))
+            .ToList();
+    }
+
+    private static object OutlineItem(SymbolOutline.Entry entry, string displayPath, int[][] nameRanges) =>
+        new
+        {
+            name = entry.Name,
+            path = displayPath,
+            line = entry.Line,
+            depth = entry.Indent,
+            kind = entry.Kind,
+            nameRanges,
+            ranges = Array.Empty<int[]>(),
+            isDefinition = true,
+        };
+
+    /// <summary>
+    /// The outline position of <paramref name="needle"/>, matched on declaration line (unique
+    /// per outline), or -1. The chain shares <see cref="SymbolOutline.Entry"/> values with the
+    /// outline it was derived from, so this is an exact lookup, not a heuristic.
+    /// </summary>
+    private static int IndexOfEntry(IReadOnlyList<SymbolOutline.Entry> outline, SymbolOutline.Entry needle)
+    {
+        for (int i = 0; i < outline.Count; i++)
+        {
+            if (outline[i].Line == needle.Line)
+            {
+                return i;
+            }
+        }
+
+        return -1;
     }
 
     private static async Task HandlePreviewAsync(string path, int? line, bool isBinary, bool isDirectory)
@@ -1745,3 +1889,11 @@ internal static class SeekyModalWindowManager
     [DllImport("gdi32.dll")]
     private static extern IntPtr CreateSolidBrush(uint crColor);
 }
+
+/// <summary>
+/// The editor snapshot behind a Document Outline show: the document, the caret line, and every
+/// declaration in it, captured by <see cref="SeekySymbolPathCommand"/> before the popup took
+/// focus (the active text view goes with it).
+/// </summary>
+internal sealed record SymbolPathRequest(
+    string DocumentPath, int CaretLine, IReadOnlyList<SymbolOutline.Entry> Outline);

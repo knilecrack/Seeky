@@ -121,7 +121,7 @@ internal static class EditorWord
         return term.Length == 0 ? null : term;
     }
 
-    private static string RangeToString(TextRange range, int maxLength)
+    internal static string RangeToString(TextRange range, int maxLength)
     {
         int length = Math.Min(range.Length, maxLength);
         if (length <= 0)

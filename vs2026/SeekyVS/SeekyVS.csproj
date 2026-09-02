@@ -11,7 +11,7 @@
     <AssemblyName>SeekyVS</AssemblyName>
     <!-- VSIX identity version (flows via ExtensionAssemblyVersion into the manifest) —
          bump on every release so VS offers the update. -->
-    <Version>1.7.0</Version>
+    <Version>1.7.1</Version>
     <!-- LibraryImport source-generated P/Invoke (FffNativeClient) requires unsafe code. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- The windows10.0.19041.0 TFM implicitly references the C#/WinRT projection

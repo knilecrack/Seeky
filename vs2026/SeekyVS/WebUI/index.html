@@ -318,7 +318,7 @@
 
       var HINT = 'Tab cycles Files/Grep/Symbols/Git · Ctrl+N/P move · Ctrl+R grep mode · Ctrl+D defs · Ctrl+±/0 font · Ctrl+Shift+±/0 window';
 
-      var mode = 'files'; // 'files' | 'grep' | 'git' | 'symbols'
+      var mode = 'files'; // 'files' | 'grep' | 'git' | 'symbols' | 'path'
       var grepMode = 'fuzzy'; // 'plain' | 'regex' | 'fuzzy' (fuzzy is fff's signature mode)
       var defsOnly = false;   // Ctrl+D: grep rows filtered to definitions (resets per search)
       var history = [];       // past queries from fff (most recent first)
@@ -375,9 +375,9 @@
 
       function sendSearch() {
         var query = queryEl.value;
-        // Symbols is a browsable list: an empty query lists the workspace's symbols rather than
+        // Symbols and Symbol Path are browsable lists: an empty query lists rather than
         // clearing, so the picker is useful before the first keystroke.
-        if (query.length === 0 && mode !== 'symbols') {
+        if (query.length === 0 && mode !== 'symbols' && mode !== 'path') {
           // Clean state: no query, no search, no results.
           items = [];
           selected = -1;
@@ -404,12 +404,15 @@
                 ? 'Directories'
                 : mode === 'symbols'
                     ? 'Symbols'
-                    : `Live Grep (${grepMode})`;
+                    : mode === 'path'
+                        ? 'Document Outline'
+                        : `Live Grep (${grepMode})`;
       }
 
       function toggleMode() {
         // NOTE: 'dirs' mode is hidden for now (backend support kept) — cycle is
-        // files/grep/symbols/git.
+        // files/grep/symbols/git. 'path' is command-entered only (the caret context exists
+        // only when the command runs); Tab out of it falls through to 'files'.
         mode = mode === 'files' ? 'grep'
           : mode === 'grep' ? 'symbols'
             : mode === 'symbols' ? 'git' : 'files';
@@ -422,13 +425,13 @@
       // every show, so the page is already in a clean state, and if 'setMode' races ahead
       // of 'reset' it must not clobber an in-flight typed query.
       function applyMode(newMode) {
-        if (newMode !== 'files' && newMode !== 'grep' && newMode !== 'git' && newMode !== 'symbols') {
+        if (newMode !== 'files' && newMode !== 'grep' && newMode !== 'git' && newMode !== 'symbols' && newMode !== 'path') {
           return;
         }
         mode = newMode;
         updatePromptLabel();
-        if (mode === 'symbols') {
-          // Symbols lists on an empty query — kick the sweep off as soon as the popup opens.
+        if (mode === 'symbols' || mode === 'path') {
+          // These list on an empty query — kick off as soon as the popup opens.
           sendSearch();
         }
       }
@@ -557,7 +560,24 @@
           if (badge && mode !== 'symbols') {
             row.appendChild(badge);
           }
-          if (mode === 'symbols') {
+          if (mode === 'path') {
+            // Document outline: "kind  Name  :line", indented by declaration depth (em so
+            // Ctrl+± font scaling keeps proportions). All rows are the same file — the path
+            // goes on the tooltip.
+            row.style.paddingLeft = ((item.depth || 0) / 4 * 1.5) + 'em';
+            var pathKind = document.createElement('span');
+            pathKind.className = 'kind-badge';
+            pathKind.textContent = item.kind || '';
+            row.appendChild(pathKind);
+            var pathName = document.createElement('span');
+            pathName.textContent = item.name || '';
+            row.appendChild(pathName);
+            var pathLoc = document.createElement('span');
+            pathLoc.className = 'sym-location';
+            pathLoc.textContent = ':' + item.line;
+            pathLoc.title = item.path || '';
+            row.appendChild(pathLoc);
+          } else if (mode === 'symbols') {
             // "kind  Name  path:line" — the name carries the fuzzy highlight, not the source line.
             var kindBadge = document.createElement('span');
             kindBadge.className = 'kind-badge';
@@ -818,10 +838,21 @@
             items = message.items || [];
             lastCapped = !!message.capped;
             lastDuration = message.duration || 0;
-            selected = items.length > 0 ? 0 : -1;
+            // The host can preselect a row (document outline: the symbol enclosing the caret).
+            var hostPick = typeof message.selectedIndex === 'number'
+              ? Math.min(message.selectedIndex, items.length - 1)
+              : -1;
+            selected = items.length > 0 ? (hostPick >= 0 ? hostPick : 0) : -1;
             renderResults();
-            // Best match is the bottom row — scroll to it.
-            resultsEl.scrollTop = resultsEl.scrollHeight;
+            if (hostPick >= 0) {
+              var pickedRow = rowByIndex[selected];
+              if (pickedRow) {
+                pickedRow.scrollIntoView({ block: 'center' });
+              }
+            } else {
+              // Best match is the bottom row — scroll to it.
+              resultsEl.scrollTop = resultsEl.scrollHeight;
+            }
             updateResultStatus();
             if (selected >= 0) {
               requestPreview(items[selected]);
