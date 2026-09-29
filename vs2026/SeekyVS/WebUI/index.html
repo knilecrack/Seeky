@@ -406,9 +406,9 @@
                                                                   | 'any' ('|'-separated literals,
                                                                   fff multi_grep; constraint tokens
                                                                   like *.cs split off by the host)
-                                                                symbols is the only mode that
-                                                                searches on an empty query (it
-                                                                lists the workspace's symbols)
+                                                                symbols and files also search on
+                                                                an empty query (the workspace's
+                                                                symbols / recent files)
                     { type: 'preview', path, line?, binary?, directory? }
                     { type: 'open', path, line?, col?, directory? }
                                                                 directory=true opens the folder
@@ -436,7 +436,9 @@
                     { type: 'status', message }
                     { type: 'reset' }                      clean slate each time the popup is shown
                     { type: 'setMode', mode }              sent with 'reset' when a command
-                                                           shows the popup
+                                                           shows the popup. Resume Last Search
+                                                           sends neither: the page is re-shown
+                                                           exactly as it was left
                     { type: 'setQuery', query }            pre-fills the prompt and searches;
                                                            sent by Grep Word Under Cursor with the
                                                            editor's selection or the identifier
@@ -488,7 +490,7 @@
       var previewContentEl = document.getElementById('preview-content');
       var statusEl = document.getElementById('status');
 
-      var HINT = 'Tab cycles Files/Grep/Current File/Symbols/Git/Files+Folders · Ctrl+N/P move · Ctrl+R grep mode · Ctrl+D defs · Ctrl+T theme · Ctrl+±/0 font · Ctrl+Shift+±/0 window';
+      var HINT = 'Tab cycles Files/Grep/Current File/Symbols/Git/Files+Folders · Ctrl+N/P move · Ctrl+R grep mode · Ctrl+D defs · Ctrl+F grep in selected · Ctrl+T theme · Ctrl+±/0 font · Ctrl+Shift+±/0 window';
 
       var mode = 'files'; // 'files' | 'grep' | 'buffer' | 'git' | 'mixed' | 'symbols' | 'path'
       var grepMode = 'fuzzy'; // 'plain' | 'regex' | 'fuzzy' | 'any' (fuzzy is fff's signature mode)
@@ -565,9 +567,9 @@
 
       function sendSearch() {
         var query = queryEl.value;
-        // Symbols and Symbol Path are browsable lists: an empty query lists rather than
-        // clearing, so the picker is useful before the first keystroke.
-        if (query.length === 0 && mode !== 'symbols' && mode !== 'path') {
+        // Symbols, Symbol Path and Find Files (recent files) are browsable lists: an empty query
+        // lists rather than clearing, so the picker is useful before the first keystroke.
+        if (query.length === 0 && mode !== 'symbols' && mode !== 'path' && mode !== 'files') {
           // Clean state: no query, no search, no results.
           items = [];
           selected = -1;
@@ -628,7 +630,7 @@
         }
         mode = newMode;
         updatePromptLabel();
-        if (mode === 'symbols' || mode === 'path') {
+        if (mode === 'symbols' || mode === 'path' || mode === 'files') {
           // These list on an empty query — kick off as soon as the popup opens.
           sendSearch();
         }
@@ -658,6 +660,29 @@
         sendState();
       }
 
+      // Ctrl+F on a file-list row: switch to Live Grep scoped to it — 'folder/ ' for a folder,
+      // '**/path ' for a file (fff v0.10.1 ignores a bare file path as a grep constraint but
+      // honours it as a glob). The caret lands after the scope; nothing is searched until a
+      // pattern is typed (a scope alone matches no lines anyway).
+      function grepInSelected() {
+        var item = items[selected];
+        if (!item || (mode !== 'files' && mode !== 'mixed' && mode !== 'git')) {
+          return;
+        }
+        var scope = item.isDirectory ? item.path + '/' : '**/' + item.path;
+        mode = 'grep';
+        updatePromptLabel();
+        queryEl.value = scope + ' ';
+        queryEl.setSelectionRange(queryEl.value.length, queryEl.value.length);
+        historyIndex = -1;
+        items = [];
+        selected = -1;
+        renderResults();
+        previewTitleEl.textContent = '';
+        previewContentEl.textContent = '';
+        statusEl.textContent = 'grep in ' + item.path + (item.isDirectory ? '/' : '') + ' — type a pattern';
+      }
+
       // Indices into items[] visible under the current defsOnly filter.
       function visibleIndices() {
         var out = [];
@@ -674,6 +699,7 @@
         statusEl.textContent = count + ' results' +
           (lastCapped ? ' (capped)' : '') +
           (defsOnly && isGrepLike() ? ' (defs only)' : '') +
+          (mode === 'files' && queryEl.value === '' ? ' (recent files)' : '') +
           ' — ' + lastDuration + 'ms';
       }
 
@@ -913,6 +939,13 @@
         }
       }
 
+      // Keep keyboard focus in the prompt when a row is clicked: rows are plain divs, so a click
+      // would otherwise hand focus to <body>, where Enter, arrows and typing do nothing (only
+      // Esc still works — the host catches that one as an accelerator).
+      resultsEl.addEventListener('mousedown', function (e) {
+        e.preventDefault();
+      });
+
       resultsEl.addEventListener('click', function (e) {
         var target = e.target;
         if (!(target instanceof Element)) {
@@ -964,7 +997,13 @@
         scheduleSearch();
       });
 
-      queryEl.addEventListener('keydown', function (e) {
+      // On the document, not the input: wherever focus has drifted (a click in the preview, say),
+      // the picker's keys still work. Focus is pulled back to the prompt first, so a printable
+      // key typed while it was elsewhere still lands in the query.
+      document.addEventListener('keydown', function (e) {
+        if (document.activeElement !== queryEl) {
+          queryEl.focus();
+        }
         var key = e.key;
         if (key === 'Tab' || (key === 'g' && e.ctrlKey)) {
           e.preventDefault();
@@ -1004,6 +1043,9 @@
         } else if (key === 't' && e.ctrlKey) {
           e.preventDefault();
           cycleTheme();
+        } else if (key === 'f' && e.ctrlKey) {
+          e.preventDefault();
+          grepInSelected();
         } else if (key === 'ArrowDown' || (key === 'j' && e.ctrlKey) || (key === 'n' && e.ctrlKey)) {
           e.preventDefault();
           if (historyIndex >= 0) {

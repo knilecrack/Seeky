@@ -106,6 +106,12 @@ internal static class SeekyModalWindowManager
 
     private static string requestedMode = "files";
 
+    /// <summary>
+    /// True for a Resume Last Search show: the page is re-shown as it was left instead of being
+    /// reset, and the previous show's requested mode, query and snapshots stay in place.
+    /// </summary>
+    private static bool resumeRequested;
+
     /// <summary>Prompt text to open with, from Grep Word Under Cursor; null for every other command.</summary>
     private static string? requestedQuery;
 
@@ -134,7 +140,10 @@ internal static class SeekyModalWindowManager
     /// The command's client context (fallback workspace source); null when the show comes
     /// from the remote-control pipe rather than a command (RemoteControlServer).
     /// </param>
-    /// <param name="mode">Picker mode the page should start in: "files", "grep", "buffer", "git", "mixed", "symbols", or "path".</param>
+    /// <param name="mode">
+    /// Picker mode the page should start in: "files", "grep", "buffer", "git", "mixed", "symbols",
+    /// or "path" — or "resume" to re-show the popup exactly as it was left.
+    /// </param>
     /// <param name="initialQuery">
     /// Pre-fills the prompt and searches immediately (Grep Word Under Cursor). Null leaves the
     /// prompt empty, which is what every other command wants.
@@ -151,16 +160,30 @@ internal static class SeekyModalWindowManager
         SymbolPathRequest? pathRequest = null)
     {
         SeekyModalWindowManager.extensibility = extensibility;
-        lastClientContext = clientContext;
-        // "dirs" is the pre-Files & Folders name, still accepted from the remote-control pipe.
-        requestedMode = mode == "dirs" ? "mixed"
-            : mode is "files" or "grep" or "buffer" or "git" or "mixed" or "symbols" or "path" ? mode : "files";
+        resumeRequested = mode == "resume";
 
-        // Set on every show, so a plain Live Grep after a Grep Word clears it rather than
-        // inheriting the previous command's term.
-        requestedQuery = initialQuery;
-        requestedPath = pathRequest;
-        bufferSnapshot = null;
+        // A pipe-driven resume has no context; keep the previous one rather than lose the editor.
+        if (!resumeRequested || clientContext is not null)
+        {
+            lastClientContext = clientContext;
+        }
+
+        // Resume keeps everything the resumed page was built from: its mode (so a first-ever
+        // resume, before the window exists, opens as whatever was last requested), its Document
+        // Outline snapshot and its Current File text — the rows on screen point into those.
+        if (!resumeRequested)
+        {
+            // "dirs" is the pre-Files & Folders name, still accepted from the remote-control pipe.
+            requestedMode = mode == "dirs" ? "mixed"
+                : mode is "files" or "grep" or "buffer" or "git" or "mixed" or "symbols" or "path" ? mode : "files";
+
+            // Set on every show, so a plain Live Grep after a Grep Word clears it rather than
+            // inheriting the previous command's term.
+            requestedQuery = initialQuery;
+            requestedPath = pathRequest;
+            bufferSnapshot = null;
+        }
+
         EnsureUiThread();
         SeekyLog.Info($"ShowAsync (mode={requestedMode}): enqueueing ShowCore on UI thread");
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -277,13 +300,22 @@ internal static class SeekyModalWindowManager
             // On the threadpool — workspace resolution does extensibility RPC (no RPC on the pump).
             workspaceRefresh = Task.Run(() => RefreshWorkspaceAsync());
         workspaceRefresh.Forget();
-            PostJson(new { type = "reset" });
+            if (resumeRequested)
+            {
+                // The page still holds the last session's mode, query, rows and selection.
+                PostState();
+            }
+            else
+            {
+                PostJson(new { type = "reset" });
 
-            // Before setMode: applyMode redraws the prompt label, which shows the grep sub-mode,
-            // so the restored mode has to be in place by then.
-            PostState();
-            PostJson(new { type = "setMode", mode = requestedMode });
-            PostRequestedQuery();
+                // Before setMode: applyMode redraws the prompt label, which shows the grep
+                // sub-mode, so the restored mode has to be in place by then.
+                PostState();
+                PostJson(new { type = "setMode", mode = requestedMode });
+                PostRequestedQuery();
+            }
+
             Task.Run(() => PostHistoryAsync()).Forget();
             FocusPopup();
             return;
@@ -614,6 +646,12 @@ internal static class SeekyModalWindowManager
         {
             // Ignore malformed messages from the page.
         }
+        catch (Exception ex)
+        {
+            // Logged, never rethrown: an exception escaping a WebView2 event handler vanishes
+            // without a trace, which is how a broken 'open' once looked like "Enter does nothing".
+            SeekyLog.Error("WebMessageReceived: handling a page message failed", ex);
+        }
     }
 
     // ------------------------------------------------------------------ Search / preview / open
@@ -623,8 +661,12 @@ internal static class SeekyModalWindowManager
             ? value.GetString()
             : null;
 
+    // The kind check is load-bearing: TryGetInt32 THROWS on a non-number (it does not return
+    // false), and Find Files rows carry "line": null whenever the query has no ':line' suffix.
     private static int? GetInt(JsonElement element, string property) =>
-        element.TryGetProperty(property, out JsonElement value) && value.TryGetInt32(out int number)
+        element.TryGetProperty(property, out JsonElement value)
+        && value.ValueKind == JsonValueKind.Number
+        && value.TryGetInt32(out int number)
             ? number
             : null;
 
@@ -1404,24 +1446,41 @@ internal static class SeekyModalWindowManager
             {
                 // current_file deprioritizes the file already open in VS (alternate-file workflow).
                 string? currentFile = await GetActiveDocumentRelativePathAsync(cancellationToken);
-                FffNativeClient.FileSearch search =
-                    await FffClient.FindFilesAsync(query, currentFile, maxResults, cancellationToken);
-
-                // "Foo.cs:42:9": fff strips the location off the fuzzy text and hands it back, so
-                // every row carries it — the preview centers on it and Enter opens there.
-                FffNativeClient.QueryLocation? location = search.Location;
-                items = search.Items
-                    .Select(f => (object)new
+                if (query.Length == 0)
+                {
+                    // Empty prompt: recent files (fff's access frecency is never fed from VS —
+                    // see RecentFiles). The active file is recorded, then left off the list, so
+                    // the top row is the previous file.
+                    if (currentFile is not null)
                     {
-                        name = f.Path,
-                        path = f.Path,
-                        line = location?.Line,
-                        col = location?.Col,
-                        frecency = f.FrecencyScore,
-                        gitStatus = f.GitStatus,
-                        isBinary = f.IsBinary,
-                    })
-                    .ToList();
+                        RecentFiles.Touch(Path.Combine(workspaceDir, currentFile));
+                    }
+
+                    items = RecentFiles.InWorkspace(workspaceDir, currentFile, maxResults)
+                        .Select(path => (object)new { name = path, path })
+                        .ToList();
+                }
+                else
+                {
+                    FffNativeClient.FileSearch search =
+                        await FffClient.FindFilesAsync(query, currentFile, maxResults, cancellationToken);
+
+                    // "Foo.cs:42:9": fff strips the location off the fuzzy text and hands it back, so
+                    // every row carries it — the preview centers on it and Enter opens there.
+                    FffNativeClient.QueryLocation? location = search.Location;
+                    items = search.Items
+                        .Select(f => (object)new
+                        {
+                            name = f.Path,
+                            path = f.Path,
+                            line = location?.Line,
+                            col = location?.Col,
+                            frecency = f.FrecencyScore,
+                            gitStatus = f.GitStatus,
+                            isBinary = f.IsBinary,
+                        })
+                        .ToList();
+                }
             }
 
             if (cancellationToken.IsCancellationRequested || generation != searchGeneration)
@@ -1620,6 +1679,7 @@ internal static class SeekyModalWindowManager
             // fff canonicalizes the path, so it must be absolute — a workspace-relative path
             // resolves against the extension host's CWD and fails with os error 3.
             FffClient.TrackQueryAsync(lastSearchQuery, absolutePath, CancellationToken.None).Forget();
+            RecentFiles.Touch(absolutePath);
 
             await extensibility.Documents()
                 .OpenTextDocumentAsync(new Uri(absolutePath), options, CancellationToken.None)

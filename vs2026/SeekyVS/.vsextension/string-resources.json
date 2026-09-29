@@ -4,5 +4,6 @@
   "SeekyVS.SeekyGrepWordCommand.DisplayName": "Seeky: Grep Word Under Cursor",
   "SeekyVS.SeekySymbolsCommand.DisplayName": "Seeky: Symbols",
   "SeekyVS.SeekySymbolPathCommand.DisplayName": "Seeky: Document Outline",
-  "SeekyVS.SeekySearchCurrentFileCommand.DisplayName": "Seeky: Search Current File"
+  "SeekyVS.SeekySearchCurrentFileCommand.DisplayName": "Seeky: Search Current File",
+  "SeekyVS.SeekyResumeCommand.DisplayName": "Seeky: Resume Last Search"
 }

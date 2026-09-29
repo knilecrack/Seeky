@@ -163,7 +163,17 @@ same — these failures are all silent or cryptic without instrumentation.
   (Ctrl+Shift+Alt+I) / "Seeky: Symbols" (Ctrl+Shift+Alt+,) / "Seeky: Grep Word Under Cursor"
   (Ctrl+Shift+Alt+G), Tools menu → `SeekyModalWindowManager.ShowAsync(Extensibility, context,
   mode, initialQuery)`. `SeekySearchCurrentFileCommand.cs` — "Seeky: Search Current File"
-  (Ctrl+Shift+Alt+F) opens the same popup in `buffer` mode.
+  (Ctrl+Shift+Alt+F) opens the same popup in `buffer` mode. `SeekyResumeCommand.cs` — "Seeky:
+  Resume Last Search" (Ctrl+Shift+Alt+W) re-shows the popup exactly as it was left (mode, query,
+  rows, selection, scroll): `ShowAsync(…, "resume")` skips the `reset`/`setMode` posts, and the
+  page — only ever hidden between uses — still holds everything.
+- `RecentFiles.cs` / `RecentFilesListener.cs` — what Find Files lists on an **empty prompt**:
+  most-recently-used files, the active document left off so the top row is the previous file.
+  fff can't supply this — its access frecency is only fed by `track_access`, which the C API
+  doesn't export, so every access score is 0 from VS. Fed by Seeky picks, every document VS opens
+  (`ITextViewOpenClosedListener`), and the active document when Find Files opens (the SDK has no
+  tab-switch event). One global list in `%LOCALAPPDATA%\SeekyVS\recent.json`, filtered to the
+  workspace on read.
 - `BufferSearch.cs` — the Current File (`buffer`) mode: Live Grep's plain / regex / fuzzy
   matching run in-process over the active editor's lines (so unsaved edits are searched too;
   fff only sees disk). Plain/regex are smart-case and return hits in line order, fuzzy uses
@@ -231,7 +241,10 @@ same — these failures are all silent or cryptic without instrumentation.
   plain → regex → **fuzzy** (default — fff's signature mode) → **any** (`TODO|FIXME *.cs`:
   lines matching any `|`-separated literal, via `fff_multi_grep`), **Ctrl+D** toggles a
   definitions-only filter on grep results (`SymbolClassifier`-tagged, shown with a
-  `def` badge), **Ctrl+T** cycles the colour theme (see "Settings file"), **↑/↓** (and
+  `def` badge), **Ctrl+F** on a Find Files / Files & Folders / Git Modified row switches to Live
+  Grep scoped to it (`folder/ ` or `**/path/file.cs ` — v0.10.1 ignores a bare file path as a grep
+  constraint but honours the glob), **Ctrl+T** cycles the colour theme (see "Settings file"),
+  **↑/↓** (and
   **Ctrl+J/K**, **Ctrl+N/P** readline-style) move — and **↑ in an empty prompt with no results listed cycles past
   queries** (fff's history LMDB, populated by frecency picks), **Enter** opens at the match
   line (directories open in Windows Explorer), **Esc** closes; search is debounced 150ms;
