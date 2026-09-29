@@ -176,9 +176,10 @@ same — these failures are all silent or cryptic without instrumentation.
   `GetContainingLine()` → expand over letters/digits/underscore). Caret on whitespace yields
   nothing and the popup opens with an empty prompt, matching VS's own Ctrl+F3.
 - `SeekyState.cs` — popup state that outlives a close (font size, grep sub-mode, defs filter,
-  window size). Layered: `<workspace>\.vs\seeky\state.json` over
+  window size, theme). Layered: `<workspace>\.vs\seeky\state.json` over
   `%LOCALAPPDATA%\SeekyVS\settings.json` over built-in defaults. Written on hide, merged into the
-  target file so hand-edited keys (`fontFamily`, `opacity`) survive.
+  target file so hand-edited keys (`fontFamily`, `opacity`) survive. The theme is global: read
+  from and written to `settings.json` only.
 - `SeekyModalWindowManager.cs` — the whole modal window: dedicated STA thread with a Win32 message
   loop + work queue + minimal `SynchronizationContext`; `RegisterClassEx`/`CreateWindowEx` window;
   WebView2 Core controller on the HWND (env, bounds on `WM_SIZE`, virtual host mapping anchored at
@@ -230,8 +231,8 @@ same — these failures are all silent or cryptic without instrumentation.
   plain → regex → **fuzzy** (default — fff's signature mode) → **any** (`TODO|FIXME *.cs`:
   lines matching any `|`-separated literal, via `fff_multi_grep`), **Ctrl+D** toggles a
   definitions-only filter on grep results (`SymbolClassifier`-tagged, shown with a
-  `def` badge), **↑/↓** (and **Ctrl+J/K**, **Ctrl+N/P** readline-style) move — and **↑ in an
-  empty prompt with no results listed cycles past
+  `def` badge), **Ctrl+T** cycles the colour theme (see "Settings file"), **↑/↓** (and
+  **Ctrl+J/K**, **Ctrl+N/P** readline-style) move — and **↑ in an empty prompt with no results listed cycles past
   queries** (fff's history LMDB, populated by frecency picks), **Enter** opens at the match
   line (directories open in Windows Explorer), **Esc** closes; search is debounced 150ms;
   selection drives the preview. Result rows carry git-status badges (`M`, `??`) from fff;
@@ -430,7 +431,8 @@ show** (edit it, reopen the popup — no VS restart needed):
 ```json
 {
   "fontFamily": "mono",
-  "opacity": 92
+  "opacity": 92,
+  "theme": "tokyo-night"
 }
 ```
 
@@ -444,6 +446,13 @@ show** (edit it, reopen the popup — no VS restart needed):
   via `WS_EX_LAYERED` + `SetLayeredWindowAttributes` — true per-pixel see-through isn't possible
   because WebView2 composites its own child window. The popup also requests rounded corners via
   the Windows 11 DWM corner attribute (no-op elsewhere).
+- `"theme"`: `"phosphor"` (default — green CRT with scanlines and glow), `"dark"` (neutral
+  black/white), `"light"`, `"tokyo-night"`, `"cyberpunk"` (neon magenta/cyan with glow), or a
+  Catppuccin flavour: `"catppuccin-latte"` (light), `"catppuccin-frappe"`,
+  `"catppuccin-macchiato"`, `"catppuccin-mocha"`.
+  **Ctrl+T** in the popup cycles them live and writes the choice here on close. Each theme is a
+  block of CSS variables on `<html data-theme="…">` in `WebUI/index.html`; adding one means a
+  new block there plus the name in the page's `THEMES` list and `SeekyState.NormalizeTheme`.
 
 If the file doesn't exist, a default `{ "fontFamily": "mono" }` is written once so the file is
 discoverable. Malformed JSON is logged and ignored (defaults apply). The resolved font is
@@ -460,13 +469,13 @@ typing reaches the page immediately).
 
 Remaining:
 
-1. **Theme bridging.** The page ships a deliberate phosphor-CRT theme (`--bg: #050806`,
-   `--accent: #00ff41`) rather than VS's colors, and the popup's window-class border brush is
-   painted to match (`CreateSolidBrush(0x0041FF00)` — COLORREF is `0x00BBGGRR`). Following VS's
+1. **Theme bridging.** The page ships its own themes (phosphor CRT by default, plus dark, light,
+   tokyo-night, cyberpunk and the four Catppuccin flavours — see "Settings file") rather than VS's colors, and the popup's
+   window-class border brush is swapped to match each one (`ApplyFrameColor`:
+   `SetClassLongPtr(GCLP_HBRBACKGROUND)`; COLORREF is `0x00BBGGRR`). Following VS's
    actual theme instead would need the theme color APIs (`IThemingService`/`EnvironmentColors`
    equivalents in the out-of-proc SDK) pushed into the page as CSS variables — mirrors what
-   `media/style.css` does with VS Code theme variables. Note that adopting VS theming would mean
-   dropping the phosphor look, so this is now a choice rather than a gap.
+   `media/style.css` does with VS Code theme variables — it would fit as one more theme.
 2. **Chromeless UX details.** No drag move and no *mouse* resize. Both would need `WS_THICKFRAME`
    plus `WM_NCHITTEST` handling, and the grab region is the problem: the WebView2 child covers the
    client area inset by `BorderWidth` (2px), and mouse messages over a child never reach the

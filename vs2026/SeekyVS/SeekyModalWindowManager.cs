@@ -68,9 +68,14 @@ internal static class SeekyModalWindowManager
     private static int windowWidth = 1200;
     private static int windowHeight = 700;
 
-    // Chromeless popup border: the window class background is painted in the accent color and
-    // the WebView2 is inset by BorderWidth, producing a crisp frame around the page.
+    // Chromeless popup border: the window class background is painted in the theme's frame color
+    // and the WebView2 is inset by BorderWidth, producing a crisp frame around the page.
     private const int BorderWidth = 2;
+    private const int GclpHbrBackground = -10;
+
+    /// <summary>One solid brush per theme frame color, created on first use and kept for the
+    /// process lifetime (a handful of GDI objects; swapping them never has to free one in use).</summary>
+    private static readonly Dictionary<uint, IntPtr> FrameBrushes = new();
 
     private static readonly ConcurrentQueue<Action> WorkQueue = new();
     private static readonly WndProcDelegate WndProcCallback = WndProc;
@@ -93,7 +98,7 @@ internal static class SeekyModalWindowManager
     /// </summary>
     private static Task? workspaceRefresh;
     /// <summary>
-    /// Font size, grep sub-mode and definitions filter as the page currently has them. Loaded on
+    /// Font size, grep sub-mode, definitions filter and theme as the page currently has them. Loaded on
     /// show, updated by the page's "stateChanged" messages, flushed to disk on hide — see
     /// <see cref="SeekyState"/> for where it lands.
     /// </summary>
@@ -583,10 +588,16 @@ internal static class SeekyModalWindowManager
                             defsOnly = defs.ValueKind == JsonValueKind.True;
                         }
 
+                        string previousTheme = popupState.Theme;
                         popupState = popupState.With(
                             GetInt(doc.RootElement, "fontSize"),
                             GetString(doc.RootElement, "grepMode"),
-                            defsOnly);
+                            defsOnly,
+                            GetString(doc.RootElement, "theme"));
+                        if (popupState.Theme != previousTheme)
+                        {
+                            ApplyFrameColor(); // Ctrl+T: the page already switched itself
+                        }
                         break;
                     }
 
@@ -785,13 +796,61 @@ internal static class SeekyModalWindowManager
     /// from the same settings file and lands on the same element — unlike the rest of this
     /// message it is read-only, hand-edited in settings.json and never written back.
     /// </summary>
-    private static void PostState() => PostJson(new
+    private static void PostState()
+    {
+        ApplyFrameColor();
+        PostStateCore();
+    }
+
+    /// <summary>
+    /// Repaints the popup's frame in the current theme's color: the frame is the window class
+    /// background showing around the inset WebView2, so the brush is swapped and the window
+    /// invalidated. Marshaled to the pump like <see cref="PostJson"/>.
+    /// </summary>
+    private static void ApplyFrameColor()
+    {
+        if (GetCurrentThreadId() != uiThreadId)
+        {
+            EnqueueWork(ApplyFrameColor);
+            return;
+        }
+
+        if (windowHwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        // COLORREF is 0x00BBGGRR. Matches each [data-theme] block's accent in WebUI/index.html.
+        uint color = popupState.Theme switch
+        {
+            "dark" => 0x005A5A5A,        // #5a5a5a
+            "light" => 0x00BDBDBD,       // #bdbdbd
+            "tokyo-night" => 0x00F7A27A, // #7aa2f7
+            "cyberpunk" => 0x006D2AFF,   // #ff2a6d
+            "catppuccin-latte" => 0x00EF3988,     // #8839ef
+            "catppuccin-frappe" => 0x00E69ECA,    // #ca9ee6
+            "catppuccin-macchiato" => 0x00F6A0C6, // #c6a0f6
+            "catppuccin-mocha" => 0x00F7A6CB,     // #cba6f7
+            _ => 0x0041FF00,             // #00ff41 phosphor
+        };
+        if (!FrameBrushes.TryGetValue(color, out IntPtr brush))
+        {
+            brush = CreateSolidBrush(color);
+            FrameBrushes[color] = brush;
+        }
+
+        _ = SetClassLongPtr(windowHwnd, GclpHbrBackground, brush);
+        _ = InvalidateRect(windowHwnd, IntPtr.Zero, true);
+    }
+
+    private static void PostStateCore() => PostJson(new
     {
         type = "setState",
         fontFamily = ResolveFontFamily(),
         fontSize = popupState.FontSize,
         grepMode = popupState.GrepMode,
         defsOnly = popupState.DefsOnly,
+        theme = popupState.Theme,
     });
 
     private static string ResolveFontFamily()
@@ -1742,7 +1801,8 @@ internal static class SeekyModalWindowManager
             // including invisible — with nothing to restore it until the mouse moved over another
             // window. A shared system cursor; it must not be destroyed.
             HCursor = LoadCursor(IntPtr.Zero, IdcArrow),
-            HbrBackground = CreateSolidBrush(0x0041FF00), // COLORREF is 0x00BBGGRR — #00FF41 (phosphor green, matches the page)
+            // Phosphor green until the first ApplyFrameColor swaps in the theme's color.
+            HbrBackground = CreateSolidBrush(0x0041FF00), // COLORREF is 0x00BBGGRR — #00FF41
             LpszMenuName = null,
             LpszClassName = WindowClassName,
             HIconSm = IntPtr.Zero,
@@ -2009,6 +2069,13 @@ internal static class SeekyModalWindowManager
 
     [DllImport("gdi32.dll")]
     private static extern IntPtr CreateSolidBrush(uint crColor);
+
+    [DllImport("user32.dll", EntryPoint = "SetClassLongPtrW")]
+    private static extern IntPtr SetClassLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool InvalidateRect(IntPtr hWnd, IntPtr lpRect, [MarshalAs(UnmanagedType.Bool)] bool bErase);
 }
 
 /// <summary>
