@@ -118,7 +118,10 @@ internal static class SeekyModalWindowManager
     /// Shows the Seeky modal window, creating it on first use, or activates it if already open.
     /// </summary>
     /// <param name="extensibility">The extensibility object (for workspaces/documents APIs).</param>
-    /// <param name="clientContext">The command's client context (fallback workspace source).</param>
+    /// <param name="clientContext">
+    /// The command's client context (fallback workspace source); null when the show comes
+    /// from the remote-control pipe rather than a command (RemoteControlServer).
+    /// </param>
     /// <param name="mode">Picker mode the page should start in: "files", "grep", "git", "symbols", or "path".</param>
     /// <param name="initialQuery">
     /// Pre-fills the prompt and searches immediately (Grep Word Under Cursor). Null leaves the
@@ -130,7 +133,7 @@ internal static class SeekyModalWindowManager
     /// <returns>A task completing when the show request has been processed on the UI thread.</returns>
     public static Task ShowAsync(
         VisualStudioExtensibility extensibility,
-        IClientContext clientContext,
+        IClientContext? clientContext,
         string mode,
         string? initialQuery = null,
         SymbolPathRequest? pathRequest = null)

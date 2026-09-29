@@ -15,21 +15,31 @@ using Microsoft.VisualStudio.Extensibility.Commands;
 [VisualStudioContribution]
 public class SeekyFindFilesCommand : Command
 {
+    /// <summary>
+    /// Creates the command. The dependency exists so DI creates the pipe server when the
+    /// shell activates the commands at startup — that is what starts the pipe NeoVS uses.
+    /// </summary>
+    public SeekyFindFilesCommand(RemoteControlServer remoteControl)
+    {
+        _ = remoteControl;
+    }
+
     /// <inheritdoc />
     public override CommandConfiguration CommandConfiguration => new("%SeekyVS.SeekyFindFilesCommand.DisplayName%")
     {
         Placements = [CommandPlacement.KnownPlacements.ToolsMenu],
         Icon = new(ImageMoniker.KnownValues.Search, IconSettings.IconAndText),
 
-        // Default keybinding (mirrors the VS Code Seeky extension); users can rebind under
-        // Tools → Options → Keyboard (the command shows up there by its display name).
-        Shortcuts = [new CommandShortcutConfiguration(ModifierKey.ControlShiftLeftAlt, Key.P)],
+        // Default keybinding (chosen so the NeoVS companion never sees it: Ctrl+Alt
+        // chords are AltGr territory and always pass through to Visual Studio).
+        // Rebindable under Tools → Options → Keyboard (by display name).
+        Shortcuts = [new CommandShortcutConfiguration(ModifierKey.ControlShiftLeftAlt, Key.O)],
     };
 
     /// <inheritdoc />
     public override async Task ExecuteCommandAsync(IClientContext context, CancellationToken cancellationToken)
     {
-        SeekyLog.Info("'Seeky: Find Files' command invoked (declared default shortcut Ctrl+Shift+Alt+P)");
+        SeekyLog.Info("'Seeky: Find Files' command invoked (declared default shortcut Ctrl+Shift+Alt+O)");
         try
         {
             await SeekyModalWindowManager.ShowAsync(this.Extensibility, context, "files");

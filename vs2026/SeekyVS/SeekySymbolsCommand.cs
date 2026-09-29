@@ -16,21 +16,30 @@ using Microsoft.VisualStudio.Extensibility.Commands;
 [VisualStudioContribution]
 public class SeekySymbolsCommand : Command
 {
+    /// <summary>
+    /// Creates the command. The dependency exists so DI creates the pipe server when the
+    /// shell activates the commands at startup — that is what starts the pipe NeoVS uses.
+    /// </summary>
+    public SeekySymbolsCommand(RemoteControlServer remoteControl)
+    {
+        _ = remoteControl;
+    }
+
     /// <inheritdoc />
     public override CommandConfiguration CommandConfiguration => new("%SeekyVS.SeekySymbolsCommand.DisplayName%")
     {
         Placements = [CommandPlacement.KnownPlacements.ToolsMenu],
         Icon = new(ImageMoniker.KnownValues.Method, IconSettings.IconAndText),
 
-        // Matches the sibling commands' Ctrl+Shift(+Alt) family; rebindable under
-        // Tools → Options → Keyboard.
-        Shortcuts = [new CommandShortcutConfiguration(ModifierKey.ControlShiftLeftAlt, Key.O)],
+        // Ctrl+, is Visual Studio's Go To All — this is the same symbol-hunting family.
+        // Rebindable under Tools → Options → Keyboard.
+        Shortcuts = [new CommandShortcutConfiguration(ModifierKey.ControlShiftLeftAlt, Key.VK_OEM_COMMA)],
     };
 
     /// <inheritdoc />
     public override async Task ExecuteCommandAsync(IClientContext context, CancellationToken cancellationToken)
     {
-        SeekyLog.Info("'Seeky: Symbols' command invoked (declared default shortcut Ctrl+Shift+Alt+O)");
+        SeekyLog.Info("'Seeky: Symbols' command invoked (declared default shortcut Ctrl+Shift+Alt+,)");
         try
         {
             await SeekyModalWindowManager.ShowAsync(this.Extensibility, context, "symbols");

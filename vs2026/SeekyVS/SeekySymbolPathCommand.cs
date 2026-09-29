@@ -19,6 +19,15 @@ using Microsoft.VisualStudio.Extensibility.Editor;
 [VisualStudioContribution]
 public class SeekySymbolPathCommand : Command
 {
+    /// <summary>
+    /// Creates the command. The dependency exists so DI creates the pipe server when the
+    /// shell activates the commands at startup — that is what starts the pipe NeoVS uses.
+    /// </summary>
+    public SeekySymbolPathCommand(RemoteControlServer remoteControl)
+    {
+        _ = remoteControl;
+    }
+
     /// <inheritdoc />
     public override CommandConfiguration CommandConfiguration => new("%SeekyVS.SeekySymbolPathCommand.DisplayName%")
     {

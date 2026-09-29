@@ -20,14 +20,24 @@ using Microsoft.VisualStudio.Extensibility.Commands;
 [VisualStudioContribution]
 public class SeekyGrepWordCommand : Command
 {
+    /// <summary>
+    /// Creates the command. The dependency exists so DI creates the pipe server when the
+    /// shell activates the commands at startup — that is what starts the pipe NeoVS uses.
+    /// </summary>
+    public SeekyGrepWordCommand(RemoteControlServer remoteControl)
+    {
+        _ = remoteControl;
+    }
+
     /// <inheritdoc />
     public override CommandConfiguration CommandConfiguration => new("%SeekyVS.SeekyGrepWordCommand.DisplayName%")
     {
         Placements = [CommandPlacement.KnownPlacements.ToolsMenu],
         Icon = new(ImageMoniker.KnownValues.Search, IconSettings.IconAndText),
 
-        // Ctrl+Shift+G is plain Live Grep; this is the same family with the Alt the other two
-        // Seeky commands already use. Rebindable under Tools → Options → Keyboard.
+        // All four Seeky commands sit on the Ctrl+Shift+Alt family: NeoVS never claims
+        // Ctrl+Alt chords, so they always reach Visual Studio's command system.
+        // Rebindable under Tools → Options → Keyboard.
         Shortcuts = [new CommandShortcutConfiguration(ModifierKey.ControlShiftLeftAlt, Key.G)],
     };
 

@@ -15,21 +15,31 @@ using Microsoft.VisualStudio.Extensibility.Commands;
 [VisualStudioContribution]
 public class SeekyLiveGrepCommand : Command
 {
+    /// <summary>
+    /// Creates the command. The dependency exists so DI creates the pipe server when the
+    /// shell activates the commands at startup — that is what starts the pipe NeoVS uses.
+    /// </summary>
+    public SeekyLiveGrepCommand(RemoteControlServer remoteControl)
+    {
+        _ = remoteControl;
+    }
+
     /// <inheritdoc />
     public override CommandConfiguration CommandConfiguration => new("%SeekyVS.SeekyLiveGrepCommand.DisplayName%")
     {
         Placements = [CommandPlacement.KnownPlacements.ToolsMenu],
         Icon = new(ImageMoniker.KnownValues.Search, IconSettings.IconAndText),
 
-        // Default keybinding (mirrors the VS Code Seeky extension); users can rebind under
-        // Tools → Options → Keyboard (the command shows up there by its display name).
-        Shortcuts = [new CommandShortcutConfiguration(ModifierKey.ControlShift, Key.G)],
+        // Default keybinding (chosen so the NeoVS companion never sees it: Ctrl+Alt
+        // chords are AltGr territory and always pass through to Visual Studio).
+        // Rebindable under Tools → Options → Keyboard (by display name).
+        Shortcuts = [new CommandShortcutConfiguration(ModifierKey.ControlShiftLeftAlt, Key.I)],
     };
 
     /// <inheritdoc />
     public override async Task ExecuteCommandAsync(IClientContext context, CancellationToken cancellationToken)
     {
-        SeekyLog.Info("'Seeky: Live Grep' command invoked (declared default shortcut Ctrl+Shift+G)");
+        SeekyLog.Info("'Seeky: Live Grep' command invoked (declared default shortcut Ctrl+Shift+Alt+I)");
         try
         {
             await SeekyModalWindowManager.ShowAsync(this.Extensibility, context, "grep");

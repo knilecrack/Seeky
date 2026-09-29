@@ -58,6 +58,10 @@ public class SeekyVSExtension : Extension
     {
         SeekyLog.Info("InitializeServices");
         base.InitializeServices(serviceCollection);
+
+        // Created (and with it the pipe) when the shell activates the commands at
+        // startup — every command declares it as a constructor dependency.
+        serviceCollection.AddSingleton<RemoteControlServer>();
     }
 
     /// <inheritdoc/>

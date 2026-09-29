@@ -159,8 +159,8 @@ same — these failures are all silent or cryptic without instrumentation.
   DLLs ship inertly in the VSIX and are never loaded).
 - `SeekyVSExtension.cs` — extension entrypoint; metadata id `SeekyVS.3f6b2d8a-…`, display name "Seeky".
 - `SeekyFindFilesCommand.cs` / `SeekyLiveGrepCommand.cs` / `SeekySymbolsCommand.cs` /
-  `SeekyGrepWordCommand.cs` — "Seeky: Find Files" (Ctrl+Shift+Alt+P) / "Seeky: Live Grep"
-  (Ctrl+Shift+G) / "Seeky: Symbols" (Ctrl+Shift+Alt+O) / "Seeky: Grep Word Under Cursor"
+  `SeekyGrepWordCommand.cs` — "Seeky: Find Files" (Ctrl+Shift+Alt+O) / "Seeky: Live Grep"
+  (Ctrl+Shift+Alt+I) / "Seeky: Symbols" (Ctrl+Shift+Alt+,) / "Seeky: Grep Word Under Cursor"
   (Ctrl+Shift+Alt+G), Tools menu → `SeekyModalWindowManager.ShowAsync(Extensibility, context,
   mode, initialQuery)`. (The original `SeekyToolWindowCommand` opened the dead-end Remote UI tool
   window; see git history.)
@@ -202,6 +202,10 @@ same — these failures are all silent or cryptic without instrumentation.
 - `SeekyLog.cs` — thread-safe file logger (`%LOCALAPPDATA%\SeekyVS\seekyvs.log`); every step of
   the extension/command/window/WebView2/fff path is logged, plus `AppDomain.UnhandledException`
   and `TaskScheduler.UnobservedTaskException`. See "Troubleshooting / diagnostics" below.
+- `RemoteControlServer.cs` — named-pipe remote control (`\\.\pipe\seekyvs-<devenvPid>`) so
+  in-proc extensions (NeoVS) can show the picker: out-of-proc commands never surface in
+  `DTE.Commands`. DI singleton started at command activation; one `mode|query` line per
+  request. See "Remote control (NeoVS integration)".
 - `SeekyToolWindow.cs` / `SeekyToolWindowContent.cs` / `.xaml` — **dead-end Remote UI experiment,
   kept for documentation only** (see above).
 - `WebUI/index.html` — **Telescope-style search UI** (plain JS/CSS, no build step): prompt row
@@ -356,6 +360,46 @@ Host → page:
 ```
 
 Stale search responses are discarded with a generation counter (new keystroke wins).
+
+## Remote control (NeoVS integration)
+
+> **Note:** current NeoVS builds no longer use this pipe — they **embed the Seeky core
+> in-proc** (same `WebUI/index.html`, same fff backend, same symbol/fuzzy code, same
+> frecency/history LMDBs and settings file). This repo is **upstream** for the shared
+> files; NeoVS keeps copy-synced ports under `VSNeo_Extension/Seeky/`:
+> `FffNativeClient.cs` (ported to net472 DllImport), `SymbolClassifier.cs`,
+> `SymbolIndex.cs`, `FuzzyMatcher.cs`, `SeekyState.cs`, `SeekyRange.cs`, `WebUI/`.
+> Keep changes to these files diff-friendly; the pipe server below stays for older
+> NeoVS builds and other clients.
+
+VisualStudio.Extensibility commands live in the out-of-proc host and **never surface in
+`DTE.Commands`** (verified against a running instance), so an in-proc extension cannot
+`ExecuteCommand` its way to the picker — NeoVS's `dte.ExecuteCommand` bridge cannot see
+"Seeky: Find Files" at all. `RemoteControlServer.cs` is the deterministic bridge: a
+named-pipe control channel, `\\.\pipe\seekyvs-<devenvPid>`, started at extension load.
+
+- **Owner pid**: the pipe is named after the devenv that loaded the extension, found by
+  walking the extension host's ancestors with `NtQueryInformationProcess` — the ServiceHub
+  spawn chain ends at exactly one devenv (verified: host → devenv directly). The
+  foreground/first-devenv heuristics from the popup's owner-window logic are the fallback
+  when a parent is unreadable. One pipe per VS instance; a NeoVS running in that instance
+  computes the same name from its own process id.
+- **Startup**: registered as a DI singleton in `InitializeServices`; every command
+  declares it as a constructor dependency, so it is created when the shell activates the
+  commands while building the command table at startup — not on first command use.
+  `Extension` itself cannot reach the `VisualStudioExtensibility` object (no such member
+  in this SDK), which is why the server is a graph service and not an extension field.
+- **Protocol**: one UTF-8 line per request over a long-lived connection — `mode` or
+  `mode|query`, split on the first `|` (a grep query may itself contain `|`); an empty
+  query behaves like none. Modes are `ShowAsync`'s whitelist (`files`, `grep`, `git`,
+  `dirs`, `symbols`; anything else falls back to `files`). Each request is answered `ok`
+  or `err <message>`. Dispatch is `SeekyModalWindowManager.ShowAsync` with a **null client
+  context** (there is no command behind a pipe request) — workspace resolution then skips
+  the active-document fallback and uses the solution directory.
+
+NeoVS consumes this as `vsneo.seeky(mode, query)` in its companion script (NeoVS hands
+nvim the pipe name as the `VSNEO_SEEKY_PIPE` environment variable when it spawns the
+process), so a normal-mode mapping like `<leader>sf` opens this picker straight from Vim.
 
 ### Settings file
 
