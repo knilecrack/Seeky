@@ -110,6 +110,13 @@ internal static class SeekyModalWindowManager
     /// command.
     /// </summary>
     private static SymbolPathRequest? requestedPath;
+
+    /// <summary>
+    /// The active document's path and lines for "buffer" (Current File) mode, read on its first
+    /// search after a show and reused per keystroke; cleared on every show so the next popup
+    /// sees the document that is active then.
+    /// </summary>
+    private static (string Path, IReadOnlyList<string> Lines)? bufferSnapshot;
     private static int searchGeneration;
     private static CancellationTokenSource? searchCancellation;
     private static string lastSearchQuery = string.Empty;
@@ -122,7 +129,7 @@ internal static class SeekyModalWindowManager
     /// The command's client context (fallback workspace source); null when the show comes
     /// from the remote-control pipe rather than a command (RemoteControlServer).
     /// </param>
-    /// <param name="mode">Picker mode the page should start in: "files", "grep", "git", "symbols", or "path".</param>
+    /// <param name="mode">Picker mode the page should start in: "files", "grep", "buffer", "git", "mixed", "symbols", or "path".</param>
     /// <param name="initialQuery">
     /// Pre-fills the prompt and searches immediately (Grep Word Under Cursor). Null leaves the
     /// prompt empty, which is what every other command wants.
@@ -140,12 +147,15 @@ internal static class SeekyModalWindowManager
     {
         SeekyModalWindowManager.extensibility = extensibility;
         lastClientContext = clientContext;
-        requestedMode = mode is "files" or "grep" or "git" or "dirs" or "symbols" or "path" ? mode : "files";
+        // "dirs" is the pre-Files & Folders name, still accepted from the remote-control pipe.
+        requestedMode = mode == "dirs" ? "mixed"
+            : mode is "files" or "grep" or "buffer" or "git" or "mixed" or "symbols" or "path" ? mode : "files";
 
         // Set on every show, so a plain Live Grep after a Grep Word clears it rather than
         // inheriting the previous command's term.
         requestedQuery = initialQuery;
         requestedPath = pathRequest;
+        bufferSnapshot = null;
         EnsureUiThread();
         SeekyLog.Info($"ShowAsync (mode={requestedMode}): enqueueing ShowCore on UI thread");
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -536,8 +546,9 @@ internal static class SeekyModalWindowManager
                     {
                         string? path = GetString(doc.RootElement, "path");
                         int? line = GetInt(doc.RootElement, "line");
+                        int? col = GetInt(doc.RootElement, "col");
                         bool isDirectory = GetBool(doc.RootElement, "directory");
-                        SeekyLog.Info($"WebMessageReceived: open '{path}' line {line} dir={isDirectory}");
+                        SeekyLog.Info($"WebMessageReceived: open '{path}' line {line} col {col} dir={isDirectory}");
 
                         // Close the popup immediately (telescope behavior). The VS document-open
                         // call hangs when awaited on this UI thread, so it runs on the threadpool
@@ -550,7 +561,7 @@ internal static class SeekyModalWindowManager
                         }
                         else
                         {
-                            Task.Run(() => HandleOpenAsync(path, line)).Forget();
+                            Task.Run(() => HandleOpenAsync(path, line, col)).Forget();
                         }
 
                         break;
@@ -1011,6 +1022,58 @@ internal static class SeekyModalWindowManager
     }
 
     /// <summary>
+    /// The active document's file path and lines, cached in <see cref="bufferSnapshot"/> for the
+    /// rest of this popup. Null when no file-backed editor is active or the query failed.
+    /// </summary>
+    /// <remarks>
+    /// Callers are on the thread pool (HandleSearchAsync) — editor RPC deadlocks the UI pump.
+    /// The client context carries the editor that was active when the command ran, so this
+    /// still answers after the popup has taken focus.
+    /// </remarks>
+    private static async Task<(string Path, IReadOnlyList<string> Lines)?> GetBufferSnapshotAsync(
+        CancellationToken cancellationToken)
+    {
+        if (bufferSnapshot is { } cached)
+        {
+            return cached;
+        }
+
+        if (extensibility is null || lastClientContext is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            using ITextViewSnapshot? textView =
+                await extensibility.Editor().GetActiveTextViewAsync(lastClientContext, cancellationToken);
+            if (textView?.Document.Uri is not Uri uri || !uri.IsFile)
+            {
+                return null;
+            }
+
+            var lines = new List<string>();
+            foreach (ITextDocumentSnapshotLine line in textView.Document.Lines)
+            {
+                lines.Add(EditorWord.RangeToString(line.Text, int.MaxValue));
+            }
+
+            bufferSnapshot = (uri.LocalPath, lines);
+            SeekyLog.Info($"Current file: {lines.Count} lines from '{uri.LocalPath}'");
+            return bufferSnapshot;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            SeekyLog.Error("Reading the active document failed", ex);
+            return null;
+        }
+    }
+
+    /// <summary>
     /// <paramref name="fullPath"/> relative to the workspace ('/' separators), or the full path
     /// unchanged when there is no workspace or the file sits outside it — Path.Combine in the
     /// preview/open handlers passes rooted paths through, so an absolute path still works.
@@ -1091,8 +1154,8 @@ internal static class SeekyModalWindowManager
             }
 
             // No-op when already indexed; restarts the index if the workspace changed.
-            // Document Outline answers from the command's editor snapshot — no fff involved.
-            if (mode != "path")
+            // Document Outline and Current File answer from the editor — no fff involved.
+            if (mode is not "path" and not "buffer")
             {
                 await FffClient.StartAsync(workspaceDir, PostStatus, cancellationToken);
             }
@@ -1149,6 +1212,7 @@ internal static class SeekyModalWindowManager
                     {
                         "regex" => FffNativeClient.GrepMode.Regex,
                         "fuzzy" => FffNativeClient.GrepMode.Fuzzy,
+                        "any" => FffNativeClient.GrepMode.Any,
                         _ => FffNativeClient.GrepMode.Plain,
                     };
                     FffNativeClient.GrepResult result =
@@ -1172,6 +1236,44 @@ internal static class SeekyModalWindowManager
                             isBinary = m.IsBinary,
                             // NOT m.IsDefinition: fff_c.dll v0.10.1 reports false for every match.
                             isDefinition = SymbolClassifier.IsDefinition(m.Path, m.Text),
+                        })
+                        .ToList();
+                }
+            }
+            else if (mode == "buffer")
+            {
+                // Current File: the grep sub-modes over the active document's text (unsaved
+                // edits included). Empty query shows nothing, like Live Grep.
+                (string Path, IReadOnlyList<string> Lines)? buffer =
+                    string.IsNullOrWhiteSpace(query) ? null : await GetBufferSnapshotAsync(cancellationToken);
+                if (buffer is null)
+                {
+                    items = new List<object>();
+                    if (!string.IsNullOrWhiteSpace(query))
+                    {
+                        PostStatus("no editor was active");
+                    }
+                }
+                else
+                {
+                    string displayPath = RelativeToWorkspace(buffer.Value.Path);
+                    List<BufferSearch.Hit> hits =
+                        BufferSearch.Search(buffer.Value.Lines, query, grepMode, maxResults, out string? regexError);
+                    if (regexError is not null)
+                    {
+                        PostStatus($"regex error (fell back to literal): {regexError}");
+                    }
+
+                    items = hits
+                        .Select(h => (object)new
+                        {
+                            name = h.Text,
+                            path = displayPath,
+                            line = h.Line,
+                            col = h.Col,
+                            text = h.Text,
+                            ranges = h.Ranges.Select(r => new[] { r.Start, r.End }).ToArray(),
+                            isDefinition = SymbolClassifier.IsDefinition(displayPath, h.Text),
                         })
                         .ToList();
                 }
@@ -1216,18 +1318,26 @@ internal static class SeekyModalWindowManager
                     })
                     .ToList();
             }
-            else if (mode == "dirs")
+            else if (mode == "mixed")
             {
-                // Directory search: fuzzy over indexed directories. Opening reveals the folder.
-                string? currentDir = await GetActiveDocumentRelativePathAsync(cancellationToken);
-                IReadOnlyList<FffNativeClient.DirItem> dirs =
-                    await FffClient.FindDirectoriesAsync(query, currentDir, maxResults, cancellationToken);
-                items = dirs
-                    .Select(d => (object)new
+                // Files & Folders: one fuzzy list over both, ranked by fff. Opening a folder
+                // reveals it in Explorer; opening a file works as in Find Files, ':line[:col]'
+                // included (file rows only — a folder has no lines).
+                string? currentFile = await GetActiveDocumentRelativePathAsync(cancellationToken);
+                FffNativeClient.MixedSearch found =
+                    await FffClient.FindMixedAsync(query, currentFile, maxResults, cancellationToken);
+                FffNativeClient.QueryLocation? location = found.Location;
+                items = found.Items
+                    .Select(m => (object)new
                     {
-                        name = d.Path,
-                        path = d.Path,
-                        isDirectory = true,
+                        name = m.Path,
+                        path = m.Path,
+                        line = m.IsDirectory ? null : location?.Line,
+                        col = m.IsDirectory ? null : location?.Col,
+                        isDirectory = m.IsDirectory,
+                        frecency = m.FrecencyScore,
+                        gitStatus = m.GitStatus,
+                        isBinary = m.IsBinary,
                     })
                     .ToList();
             }
@@ -1235,13 +1345,19 @@ internal static class SeekyModalWindowManager
             {
                 // current_file deprioritizes the file already open in VS (alternate-file workflow).
                 string? currentFile = await GetActiveDocumentRelativePathAsync(cancellationToken);
-                IReadOnlyList<FffNativeClient.FileItem> files =
+                FffNativeClient.FileSearch search =
                     await FffClient.FindFilesAsync(query, currentFile, maxResults, cancellationToken);
-                items = files
+
+                // "Foo.cs:42:9": fff strips the location off the fuzzy text and hands it back, so
+                // every row carries it — the preview centers on it and Enter opens there.
+                FffNativeClient.QueryLocation? location = search.Location;
+                items = search.Items
                     .Select(f => (object)new
                     {
                         name = f.Path,
                         path = f.Path,
+                        line = location?.Line,
+                        col = location?.Col,
                         frecency = f.FrecencyScore,
                         gitStatus = f.GitStatus,
                         isBinary = f.IsBinary,
@@ -1413,7 +1529,7 @@ internal static class SeekyModalWindowManager
         }
     }
 
-    private static async Task HandleOpenAsync(string? path, int? line)
+    private static async Task HandleOpenAsync(string? path, int? line, int? col)
     {
         try
         {
@@ -1423,9 +1539,11 @@ internal static class SeekyModalWindowManager
             }
 
             string absolutePath = Path.Combine(workspaceDir, path);
-            // RpcContracts Range is 0-based; Selection places the caret on the match line.
+            // RpcContracts Range is 0-based; Selection places the caret on the match line (and
+            // column, when one is known — a "Foo.cs:42:9" file query).
+            int column = col is int c && c > 0 ? c - 1 : 0;
             VsRange? selection = line is int lineNumber && lineNumber > 0
-                ? new VsRange(lineNumber - 1, 0, lineNumber - 1, 0)
+                ? new VsRange(lineNumber - 1, column, lineNumber - 1, column)
                 : null;
             var options = new OpenDocumentOptions(
                 selection: selection,
@@ -1437,7 +1555,7 @@ internal static class SeekyModalWindowManager
                 projectId: null,
                 editorType: null);
 
-            SeekyLog.Info($"Open: '{absolutePath}' line {line}");
+            SeekyLog.Info($"Open: '{absolutePath}' line {line} col {col}");
 
             // Frecency learning: record the pick (best-effort; never blocks the open).
             // fff canonicalizes the path, so it must be absolute — a workspace-relative path

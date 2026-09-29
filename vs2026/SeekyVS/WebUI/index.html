@@ -237,15 +237,25 @@
       }
 
     Message contract:
-      page -> host: { type: 'search', query, mode, grepMode }   mode: 'files' | 'grep' | 'git' | 'dirs'
-                                                                      | 'symbols';
+      page -> host: { type: 'search', query, mode, grepMode }   mode: 'files' | 'grep' | 'buffer' | 'git'
+                                                                      | 'mixed' | 'symbols';
+                                                                mixed = Files & Folders (fff
+                                                                search_mixed), folder rows carry
+                                                                isDirectory;
+                                                                buffer = Current File: grepMode
+                                                                matching over the active editor's
+                                                                lines, rows shaped like grep's;
                                                                 grepMode: 'plain' | 'regex' | 'fuzzy'
+                                                                  | 'any' ('|'-separated literals,
+                                                                  fff multi_grep; constraint tokens
+                                                                  like *.cs split off by the host)
                                                                 symbols is the only mode that
                                                                 searches on an empty query (it
                                                                 lists the workspace's symbols)
                     { type: 'preview', path, line?, binary?, directory? }
-                    { type: 'open', path, line?, directory? }   directory=true opens the folder
-                                                                in Windows Explorer
+                    { type: 'open', path, line?, col?, directory? }
+                                                                directory=true opens the folder
+                                                                in Windows Explorer; col is 1-based
                     { type: 'close' }
                     { type: 'resizeWindow', step }              +1 grow / -1 shrink / 0 default;
                                                                 the host owns the HWND and the
@@ -257,7 +267,9 @@
       host -> page: { type: 'results', items, done, capped, duration }
                     items: [{ name, path, line?, col?, text?, frecency?, ranges?, kind?,
                               nameRanges?, gitStatus?, isBinary?, isDefinition?, isDirectory? }]
-                    (files/git: name=path; dirs: +isDirectory; grep: +line/col/text and
+                    (files/git/mixed: name=path; files and mixed file rows +line/col when the
+                    query ended in ':line[:col]' (fff parses it; same location on every row);
+                    mixed: +isDirectory on folder rows; grep: +line/col/text and
                     ranges = [start,end) char indices into text for .mhl span highlighting,
                     grep only, may be [];
                     symbols: name=symbol name, +kind/line/text and nameRanges = [start,end)
@@ -316,10 +328,10 @@
       var previewContentEl = document.getElementById('preview-content');
       var statusEl = document.getElementById('status');
 
-      var HINT = 'Tab cycles Files/Grep/Symbols/Git · Ctrl+N/P move · Ctrl+R grep mode · Ctrl+D defs · Ctrl+±/0 font · Ctrl+Shift+±/0 window';
+      var HINT = 'Tab cycles Files/Grep/Current File/Symbols/Git/Files+Folders · Ctrl+N/P move · Ctrl+R grep mode · Ctrl+D defs · Ctrl+±/0 font · Ctrl+Shift+±/0 window';
 
-      var mode = 'files'; // 'files' | 'grep' | 'git' | 'symbols' | 'path'
-      var grepMode = 'fuzzy'; // 'plain' | 'regex' | 'fuzzy' (fuzzy is fff's signature mode)
+      var mode = 'files'; // 'files' | 'grep' | 'buffer' | 'git' | 'mixed' | 'symbols' | 'path'
+      var grepMode = 'fuzzy'; // 'plain' | 'regex' | 'fuzzy' | 'any' (fuzzy is fff's signature mode)
       var defsOnly = false;   // Ctrl+D: grep rows filtered to definitions (resets per search)
       var history = [];       // past queries from fff (most recent first)
       var historyIndex = -1;  // -1 = not navigating history
@@ -390,6 +402,11 @@
         send({ type: 'search', query: query, mode: mode, grepMode: grepMode });
       }
 
+      // Current File is Live Grep scoped to one document: same rows, sub-modes and defs filter.
+      function isGrepLike() {
+        return mode === 'grep' || mode === 'buffer';
+      }
+
       function scheduleSearch() {
         clearTimeout(debounceTimer);
         debounceTimer = setTimeout(sendSearch, 150);
@@ -400,22 +417,25 @@
           ? 'Find Files'
           : mode === 'git'
             ? 'Git Modified'
-            : mode === 'dirs'
-                ? 'Directories'
+            : mode === 'mixed'
+                ? 'Files & Folders'
                 : mode === 'symbols'
                     ? 'Symbols'
                     : mode === 'path'
                         ? 'Document Outline'
-                        : `Live Grep (${grepMode})`;
+                        : mode === 'buffer'
+                            ? `Current File (${grepMode})`
+                            : `Live Grep (${grepMode})`;
       }
 
       function toggleMode() {
-        // NOTE: 'dirs' mode is hidden for now (backend support kept) — cycle is
-        // files/grep/symbols/git. 'path' is command-entered only (the caret context exists
-        // only when the command runs); Tab out of it falls through to 'files'.
+        // files/grep/buffer/symbols/git/mixed. 'path' is command-entered only (the caret
+        // context exists only when the command runs); Tab out of it falls through to 'files'.
         mode = mode === 'files' ? 'grep'
-          : mode === 'grep' ? 'symbols'
-            : mode === 'symbols' ? 'git' : 'files';
+          : mode === 'grep' ? 'buffer'
+            : mode === 'buffer' ? 'symbols'
+              : mode === 'symbols' ? 'git'
+                : mode === 'git' ? 'mixed' : 'files';
         updatePromptLabel();
         sendSearch();
       }
@@ -425,7 +445,7 @@
       // every show, so the page is already in a clean state, and if 'setMode' races ahead
       // of 'reset' it must not clobber an in-flight typed query.
       function applyMode(newMode) {
-        if (newMode !== 'files' && newMode !== 'grep' && newMode !== 'git' && newMode !== 'symbols' && newMode !== 'path') {
+        if (newMode !== 'files' && newMode !== 'grep' && newMode !== 'buffer' && newMode !== 'git' && newMode !== 'mixed' && newMode !== 'symbols' && newMode !== 'path') {
           return;
         }
         mode = newMode;
@@ -437,10 +457,12 @@
       }
 
       function toggleGrepMode() {
-        if (mode !== 'grep') {
-          return; // grep sub-modes only make sense in Live Grep
+        if (!isGrepLike()) {
+          return; // grep sub-modes only make sense in Live Grep / Current File
         }
-        grepMode = grepMode === 'plain' ? 'regex' : grepMode === 'regex' ? 'fuzzy' : 'plain';
+        grepMode = grepMode === 'plain' ? 'regex'
+          : grepMode === 'regex' ? 'fuzzy'
+            : grepMode === 'fuzzy' ? 'any' : 'plain';
         updatePromptLabel();
         sendState();
         sendSearch();
@@ -449,7 +471,7 @@
       // Ctrl+D: filter grep rows to definitions only (page-side). Sticky — it survives both a new
       // search and a popup close, so a grep session stays filtered once you ask for it.
       function toggleDefsOnly() {
-        if (mode !== 'grep') {
+        if (!isGrepLike()) {
           return;
         }
         defsOnly = !defsOnly;
@@ -462,7 +484,7 @@
       function visibleIndices() {
         var out = [];
         for (var i = 0; i < items.length; i++) {
-          if (!defsOnly || mode !== 'grep' || items[i].isDefinition) {
+          if (!defsOnly || !isGrepLike() || items[i].isDefinition) {
             out.push(i);
           }
         }
@@ -473,7 +495,7 @@
         var count = visibleIndices().length;
         statusEl.textContent = count + ' results' +
           (lastCapped ? ' (capped)' : '') +
-          (defsOnly && mode === 'grep' ? ' (defs only)' : '') +
+          (defsOnly && isGrepLike() ? ' (defs only)' : '') +
           ' — ' + lastDuration + 'ms';
       }
 
@@ -543,7 +565,7 @@
         for (var n = indices.length - 1; n >= 0; n--) {
           var index = indices[n];
           var item = items[index];
-          if (mode === 'grep' && item.path !== lastGroupPath) {
+          if (isGrepLike() && item.path !== lastGroupPath) {
             lastGroupPath = item.path;
             var header = document.createElement('div');
             header.className = 'group-header';
@@ -552,7 +574,7 @@
             resultsEl.appendChild(header);
           }
           var row = document.createElement('div');
-          row.className = 'row' + (mode === 'grep' ? ' match' : '') + (index === selected ? ' selected' : '');
+          row.className = 'row' + (isGrepLike() ? ' match' : '') + (index === selected ? ' selected' : '');
           row.setAttribute('data-index', String(index));
           var badge = gitBadge(item.gitStatus);
           // Symbols rows lead with the fixed-width [kind] column, so a leading git badge would
@@ -596,7 +618,7 @@
               badge.style.marginRight = '0';
               row.appendChild(badge);
             }
-          } else if (mode === 'grep') {
+          } else if (isGrepLike()) {
             if (item.isDefinition) {
               var defBadge = document.createElement('span');
               defBadge.className = 'def-badge';
@@ -613,6 +635,13 @@
           } else {
             // Directory rows render with a trailing slash for distinction.
             row.appendChild(document.createTextNode(item.isDirectory ? item.path + '/' : item.path));
+            if ((mode === 'files' || mode === 'mixed') && item.line) {
+              // Query ended in ':line[:col]' — show where Enter will land.
+              var fileLoc = document.createElement('span');
+              fileLoc.className = 'dim';
+              fileLoc.textContent = ':' + item.line + (item.col ? ':' + item.col : '');
+              row.appendChild(fileLoc);
+            }
           }
           rowByIndex[index] = row;
           resultsEl.appendChild(row);
@@ -637,7 +666,7 @@
             hl = line;
             // Span-level highlight of the match ranges within the match line (grep only).
             var sel = items[selected];
-            if (mode === 'grep' && sel && sel.ranges && sel.ranges.length > 0) {
+            if (isGrepLike() && sel && sel.ranges && sel.ranges.length > 0) {
               appendHighlightedSegments(line, lineText, sel.ranges);
               previewContentEl.appendChild(line);
               return;
@@ -699,7 +728,10 @@
       function openSelected() {
         var item = items[selected];
         if (item) {
-          send({ type: 'open', path: item.path, line: item.line, directory: item.isDirectory === true });
+          // col only from Find Files / Files & Folders (the ':line:col' query suffix). Grep rows
+          // carry fff's 0-based byte column, which is not the 1-based char column the host expects.
+          var fromQuery = mode === 'files' || mode === 'mixed';
+          send({ type: 'open', path: item.path, line: item.line, col: fromQuery ? item.col : undefined, directory: item.isDirectory === true });
         }
       }
 
@@ -892,7 +924,7 @@
               fontSize = clampFontSize(message.fontSize);
               applyFontSize();
             }
-            if (message.grepMode === 'plain' || message.grepMode === 'regex' || message.grepMode === 'fuzzy') {
+            if (message.grepMode === 'plain' || message.grepMode === 'regex' || message.grepMode === 'fuzzy' || message.grepMode === 'any') {
               grepMode = message.grepMode;
             }
             defsOnly = !!message.defsOnly;

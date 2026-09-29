@@ -48,7 +48,7 @@ internal sealed record SeekyState
     /// <summary>CSS px, clamped to [<see cref="MinFontSize"/>, <see cref="MaxFontSize"/>].</summary>
     public int FontSize { get; init; } = DefaultFontSize;
 
-    /// <summary>"plain", "regex" or "fuzzy" — anything else is rejected on the way in.</summary>
+    /// <summary>"plain", "regex", "fuzzy" or "any" — anything else is rejected on the way in.</summary>
     public string GrepMode { get; init; } = DefaultGrepMode;
 
     /// <summary>Whether Live Grep rows are filtered to definitions (Ctrl+D).</summary>
@@ -196,7 +196,7 @@ internal sealed record SeekyState
     private static int ClampFontSize(int size) => Math.Clamp(size, MinFontSize, MaxFontSize);
 
     private static string? NormalizeGrepMode(string? mode) =>
-        mode is "plain" or "regex" or "fuzzy" ? mode : null;
+        mode is "plain" or "regex" or "fuzzy" or "any" ? mode : null;
 
     // JsonNode's GetValue<T> throws on a type mismatch, and a hand-edited settings file is exactly
     // where "fontSize": "16" shows up. Probe instead, and let a wrong-typed key read as absent.

@@ -23,7 +23,7 @@ using System.Threading.Tasks;
 /// <c>fff_free_grep_result</c>, <c>fff_free_scan_progress</c>, <c>fff_destroy</c>). Fields come
 /// through the accessor functions wherever the library exports one; the handful of structs read
 /// directly (<c>FffCreateOptions</c>, <c>FffScanProgress</c>, <c>FffMatchRange</c>,
-/// <c>FffDirItem</c>, the <c>FffDirSearchResult</c> header) are all blittable and read as plain
+/// <c>FffMixedItem</c>, the <c>FffSearchResult</c>/<c>FffMixedSearchResult</c> headers) are all blittable and read as plain
 /// loads via <see cref="ReadStruct{T}"/>. Every pointer is therefore either freed exactly once
 /// here or owned by the native instance. All native calls are serialized through a single gate —
 /// fff's thread-safety guarantees are undocumented, and searches are fast enough that contention
@@ -97,13 +97,35 @@ internal sealed partial class FffNativeClient : IDisposable
         Plain = 0,
         Regex = 1,
         Fuzzy = 2,
+
+        /// <summary>
+        /// Not a native live_grep mode: lines matching ANY of several literal patterns, via
+        /// fff_multi_grep (SIMD Aho-Corasick). See <see cref="SplitMultiGrepQuery"/>.
+        /// </summary>
+        Any = 3,
     }
 
     /// <summary>A fuzzy file-search result.</summary>
     internal readonly record struct FileItem(string Path, long FrecencyScore, string? GitStatus, bool IsBinary);
 
-    /// <summary>A directory-search result (fff_search_directories).</summary>
-    internal readonly record struct DirItem(string Path, string Name);
+    /// <summary>
+    /// A <c>:line[:col]</c> suffix fff parsed off a file query (<c>Foo.cs:42:9</c>); 1-based,
+    /// <paramref name="Col"/> null when only a line was given. Ranges keep their start.
+    /// </summary>
+    internal readonly record struct QueryLocation(int Line, int? Col);
+
+    /// <summary>File-search results plus the location parsed from the query, if any.</summary>
+    internal sealed record FileSearch(IReadOnlyList<FileItem> Items, QueryLocation? Location);
+
+    /// <summary>
+    /// A files-and-folders result (fff_search_mixed). Any trailing separator on a directory path
+    /// is trimmed so callers can render and join both kinds alike.
+    /// </summary>
+    internal readonly record struct MixedItem(
+        string Path, bool IsDirectory, long FrecencyScore, string? GitStatus, bool IsBinary);
+
+    /// <summary>Files-and-folders results plus the location parsed from the query, if any.</summary>
+    internal sealed record MixedSearch(IReadOnlyList<MixedItem> Items, QueryLocation? Location);
 
     /// <summary>
     /// A single grep match. <paramref name="Ranges"/> holds the highlight spans as
@@ -156,13 +178,14 @@ internal sealed partial class FffNativeClient : IDisposable
     }
 
     /// <summary>Fuzzy file search; returns workspace-relative paths with frecency scores.
-    /// <paramref name="currentFile"/> deprioritizes the currently open file (fff current_file).</summary>
-    public Task<IReadOnlyList<FileItem>> FindFilesAsync(string query, string? currentFile, int maxResults, CancellationToken cancellationToken)
+    /// <paramref name="currentFile"/> deprioritizes the currently open file (fff current_file).
+    /// A <c>:line[:col]</c> suffix on the query comes back as <see cref="FileSearch.Location"/>.</summary>
+    public Task<FileSearch> FindFilesAsync(string query, string? currentFile, int maxResults, CancellationToken cancellationToken)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxResults);
         ThrowIfDisposed();
 
-        return Task.Run<IReadOnlyList<FileItem>>(
+        return Task.Run(
             async () =>
             {
                 await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -170,9 +193,10 @@ internal sealed partial class FffNativeClient : IDisposable
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     ThrowIfNotStartedCore();
-                    return SearchFilesCore(
+                    List<FileItem> items = SearchFilesCore(
                         query, currentFile, (uint)maxResults, useGlob: false, maxResults,
-                        gitModifiedOnly: false, out _);
+                        gitModifiedOnly: false, out _, out QueryLocation? location);
+                    return new FileSearch(items, location);
                 }
                 finally
                 {
@@ -182,13 +206,17 @@ internal sealed partial class FffNativeClient : IDisposable
             cancellationToken);
     }
 
-    /// <summary>Fuzzy directory search (fff_search_directories); paths are workspace-relative.</summary>
-    public Task<IReadOnlyList<DirItem>> FindDirectoriesAsync(string query, string? currentFile, int maxResults, CancellationToken cancellationToken)
+    /// <summary>
+    /// Fuzzy search over files and directories in one ranked list (fff_search_mixed); paths are
+    /// workspace-relative. <paramref name="currentFile"/> feeds fff's distance scoring. A
+    /// <c>:line[:col]</c> suffix on the query comes back as <see cref="MixedSearch.Location"/>.
+    /// </summary>
+    public Task<MixedSearch> FindMixedAsync(string query, string? currentFile, int maxResults, CancellationToken cancellationToken)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxResults);
         ThrowIfDisposed();
 
-        return Task.Run<IReadOnlyList<DirItem>>(
+        return Task.Run(
             async () =>
             {
                 await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -197,44 +225,57 @@ internal sealed partial class FffNativeClient : IDisposable
                     cancellationToken.ThrowIfCancellationRequested();
                     ThrowIfNotStartedCore();
 
-                    IntPtr result = CallWithWatchdog("search_directories", () => Native.fff_search_directories(handle, query, currentFile, 0, 0, (uint)maxResults));
-                    IntPtr payload = UnwrapResult(result, "search_directories");
+                    IntPtr result = CallWithWatchdog("search_mixed", () => Native.fff_search_mixed(handle, query, currentFile, 0, 0, (uint)maxResults, 0, 0));
+                    IntPtr payload = UnwrapResult(result, "search_mixed");
                     try
                     {
                         // A successful FffResult with a null handle would otherwise reach the
-                        // header read below, where Marshal/ReadStruct dereference null.
+                        // header read below, where ReadStruct dereferences null.
                         if (payload == IntPtr.Zero)
                         {
-                            return (IReadOnlyList<DirItem>)Array.Empty<DirItem>();
+                            return new MixedSearch([], null);
                         }
 
-                        // v0.10.1 has no fff_dir_search_result_get_count export (it exists only
-                        // on main) — read the count from the result struct header instead.
-                        uint count = ReadStruct<FffDirSearchResultHeader>(payload).Count;
-                        var items = new List<DirItem>((int)count);
+                        // v0.10.1 exports no fff_mixed_search_result_get_count or location
+                        // accessor — read both from the result struct header instead.
+                        FffMixedSearchResultHeader header = ReadStruct<FffMixedSearchResultHeader>(payload);
+                        uint count = header.Count;
+                        var items = new List<MixedItem>((int)count);
                         for (uint i = 0; i < count; i++)
                         {
-                            IntPtr item = Native.fff_dir_search_result_get_item(payload, i);
+                            IntPtr item = Native.fff_mixed_search_result_get_item(payload, i);
                             if (item == IntPtr.Zero)
                             {
                                 continue;
                             }
 
-                            // FffDirItem { char* relative_path; char* dir_name; i32 frecency } —
-                            // the header exposes no accessors, so read the tiny struct directly.
-                            FffDirItem native = ReadStruct<FffDirItem>(item);
+                            // No per-field accessors for FffMixedItem either; it is blittable.
+                            FffMixedItem native = ReadStruct<FffMixedItem>(item);
+                            bool isDirectory = native.ItemType == 1;
                             string? path = PtrToString(native.RelativePath);
-                            if (path is not null)
+                            if (path is not null && isDirectory)
                             {
-                                items.Add(new DirItem(path, PtrToString(native.DirName) ?? path));
+                                path = TrimTrailingSeparators(path);
                             }
+
+                            if (string.IsNullOrEmpty(path))
+                            {
+                                continue; // the workspace root itself, as a directory hit
+                            }
+
+                            items.Add(new MixedItem(
+                                path,
+                                isDirectory,
+                                native.TotalFrecencyScore,
+                                PtrToString(native.GitStatus),
+                                native.IsBinary != 0));
                         }
 
-                        return (IReadOnlyList<DirItem>)items;
+                        return new MixedSearch(items, ToQueryLocation(header.Location));
                     }
                     finally
                     {
-                        Native.fff_free_dir_search_result(payload);
+                        Native.fff_free_mixed_search_result(payload);
                     }
                 }
                 finally
@@ -332,13 +373,13 @@ internal sealed partial class FffNativeClient : IDisposable
 
                     List<FileItem> items = SearchFilesCore(
                         query, null, GitModifiedPoolSize, useGlob: false, maxResults, gitModifiedOnly: true,
-                        out uint rankedCount);
+                        out uint rankedCount, out _);
                     if (rankedCount == 0 && query.Length == 0)
                     {
                         SeekyLog.Info("fff: empty-query search returned nothing; falling back to fff_glob '*'");
                         items = SearchFilesCore(
                             "*", null, GitModifiedPoolSize, useGlob: true, maxResults, gitModifiedOnly: true,
-                            out _);
+                            out _, out _);
                     }
 
                     return items;
@@ -396,6 +437,7 @@ internal sealed partial class FffNativeClient : IDisposable
     /// How many files fff ranked, before <paramref name="gitModifiedOnly"/> filtering — the caller
     /// needs to tell "the search found nothing" apart from "nothing it found was modified".
     /// </param>
+    /// <param name="location">The <c>:line[:col]</c> fff parsed off the query; null when none.</param>
     private List<FileItem> SearchFilesCore(
         string query,
         string? currentFile,
@@ -403,7 +445,8 @@ internal sealed partial class FffNativeClient : IDisposable
         bool useGlob,
         int maxItems,
         bool gitModifiedOnly,
-        out uint rankedCount)
+        out uint rankedCount,
+        out QueryLocation? location)
     {
         IntPtr result = useGlob
             ? CallWithWatchdog("glob", () => Native.fff_glob(handle, query, currentFile, 0, 0, pageSize))
@@ -413,6 +456,11 @@ internal sealed partial class FffNativeClient : IDisposable
         {
             uint count = Native.fff_search_result_get_count(payload);
             rankedCount = count;
+
+            // No accessor for the parsed location in v0.10.1 — read it off the result header.
+            location = payload == IntPtr.Zero
+                ? null
+                : ToQueryLocation(ReadStruct<FffSearchResultHeader>(payload).Location);
             var items = new List<FileItem>((int)Math.Min(count, (uint)maxItems));
             for (uint i = 0; i < count && items.Count < maxItems; i++)
             {
@@ -579,20 +627,47 @@ internal sealed partial class FffNativeClient : IDisposable
     {
         ThrowIfNotStartedCore();
 
-        IntPtr result = CallWithWatchdog("live_grep", () => Native.fff_live_grep(
-            handle,
-            query,
-            (byte)mode,
-            maxFileSize: 0,
-            maxMatchesPerFile: 0,
-            smartCase: true,
-            fileOffset: fileOffset,
-            pageLimit: filePageLimit,
-            timeBudgetMs: 0,
-            beforeContext: 0,
-            afterContext: 0,
-            classifyDefinitions: true));
-        IntPtr payload = UnwrapResult(result, "live_grep");
+        IntPtr result;
+        if (mode == GrepMode.Any)
+        {
+            (string patterns, string? constraints) = SplitMultiGrepQuery(query);
+            if (patterns.Length == 0)
+            {
+                return new GrepPage([], null, 0, 0); // only constraints typed so far
+            }
+
+            result = CallWithWatchdog("multi_grep", () => Native.fff_multi_grep(
+                handle,
+                patterns,
+                constraints,
+                maxFileSize: 0,
+                maxMatchesPerFile: 0,
+                smartCase: true,
+                fileOffset: fileOffset,
+                pageLimit: filePageLimit,
+                timeBudgetMs: 0,
+                beforeContext: 0,
+                afterContext: 0,
+                classifyDefinitions: true));
+        }
+        else
+        {
+            result = CallWithWatchdog("live_grep", () => Native.fff_live_grep(
+                handle,
+                query,
+                (byte)mode,
+                maxFileSize: 0,
+                maxMatchesPerFile: 0,
+                smartCase: true,
+                fileOffset: fileOffset,
+                pageLimit: filePageLimit,
+                timeBudgetMs: 0,
+                beforeContext: 0,
+                afterContext: 0,
+                classifyDefinitions: true));
+        }
+
+        IntPtr payload = UnwrapResult(result, mode == GrepMode.Any ? "multi_grep" : "live_grep");
         try
         {
             // Reported, not logged: every page of a paged sweep repeats the same fallback, and
@@ -650,6 +725,45 @@ internal sealed partial class FffNativeClient : IDisposable
         {
             Native.fff_free_grep_result(payload);
         }
+    }
+
+    /// <summary>
+    /// The <c>:line[:col]</c> fff parsed off a query, or null. Tag: 0 none, 1 line, 2 line+col,
+    /// 3 range (its start is kept).
+    /// </summary>
+    private static QueryLocation? ToQueryLocation(FffLocation parsed) =>
+        parsed.Tag is >= 1 and <= 3 && parsed.Line > 0
+            ? new QueryLocation(parsed.Line, parsed.Tag >= 2 && parsed.Col > 0 ? parsed.Col : null)
+            : null;
+
+    /// <summary>
+    /// Splits an "any" grep query for fff_multi_grep, which takes the patterns and the file
+    /// constraints as separate arguments (live_grep parses both out of one string itself).
+    /// Constraint-shaped tokens — <c>*.cs</c>, <c>**/*.{c,h}</c>, <c>src/</c>, <c>./x</c>,
+    /// <c>!test/</c>, <c>git:modified</c> — go to the constraints; the rest of the text is split
+    /// on <c>|</c> into literal patterns, so <c>TODO|FIXME *.cs</c> finds either word in C# files.
+    /// </summary>
+    /// <returns>
+    /// The patterns joined with newlines (empty when there are none) and the constraints,
+    /// space-joined, or null when there are none.
+    /// </returns>
+    internal static (string Patterns, string? Constraints) SplitMultiGrepQuery(string query)
+    {
+        var text = new List<string>();
+        var constraints = new List<string>();
+        foreach (string token in query.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        {
+            bool isConstraint = token.StartsWith("git:", StringComparison.Ordinal)
+                || token.StartsWith("./", StringComparison.Ordinal)
+                || (token.Length > 1 && token[0] == '!')
+                || token.EndsWith('/')
+                || token.Contains('*');
+            (isConstraint ? constraints : text).Add(token);
+        }
+
+        string[] patterns = string.Join(' ', text)
+            .Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return (string.Join('\n', patterns), constraints.Count > 0 ? string.Join(' ', constraints) : null);
     }
 
     /// <summary>
@@ -1240,15 +1354,16 @@ internal sealed partial class FffNativeClient : IDisposable
         internal static partial IntPtr fff_refresh_git_status(IntPtr handle);
 
         [LibraryImport(LibraryName, StringMarshalling = StringMarshalling.Utf8)]
-        internal static partial IntPtr fff_search_directories(
+        internal static partial IntPtr fff_search_mixed(
             IntPtr handle, string query, string? currentFile,
-            uint maxThreads, uint pageIndex, uint pageSize);
+            uint maxThreads, uint pageIndex, uint pageSize,
+            int comboBoostMultiplier, uint minComboCount);
 
         [LibraryImport(LibraryName)]
-        internal static partial IntPtr fff_dir_search_result_get_item(IntPtr result, uint index);
+        internal static partial IntPtr fff_mixed_search_result_get_item(IntPtr result, uint index);
 
         [LibraryImport(LibraryName)]
-        internal static partial void fff_free_dir_search_result(IntPtr result);
+        internal static partial void fff_free_mixed_search_result(IntPtr result);
 
         [LibraryImport(LibraryName)]
         internal static partial IntPtr fff_get_historical_query(IntPtr handle, ulong offset);
@@ -1259,6 +1374,15 @@ internal sealed partial class FffNativeClient : IDisposable
         [LibraryImport(LibraryName, StringMarshalling = StringMarshalling.Utf8)]
         internal static partial IntPtr fff_live_grep(
             IntPtr handle, string query, byte mode,
+            ulong maxFileSize, uint maxMatchesPerFile,
+            [MarshalAs(UnmanagedType.I1)] bool smartCase,
+            uint fileOffset, uint pageLimit, ulong timeBudgetMs,
+            uint beforeContext, uint afterContext,
+            [MarshalAs(UnmanagedType.I1)] bool classifyDefinitions);
+
+        [LibraryImport(LibraryName, StringMarshalling = StringMarshalling.Utf8)]
+        internal static partial IntPtr fff_multi_grep(
+            IntPtr handle, string patternsJoined, string? constraints,
             ulong maxFileSize, uint maxMatchesPerFile,
             [MarshalAs(UnmanagedType.I1)] bool smartCase,
             uint fileOffset, uint pageLimit, ulong timeBudgetMs,
@@ -1406,24 +1530,58 @@ internal sealed partial class FffNativeClient : IDisposable
         internal uint End;
     }
 
-    // Blittable mirror of FffDirItem (two char* + i32; C layout with 4-byte tail padding).
+    // Blittable mirror of FffLocation (u8 tag + four i32; C layout pads the tag to 4 bytes).
     [StructLayout(LayoutKind.Sequential)]
-    private struct FffDirItem
+    private struct FffLocation
     {
-        internal IntPtr RelativePath;
-        internal IntPtr DirName;
-        internal int MaxAccessFrecency;
+        internal byte Tag;
+        internal int Line;
+        internal int Col;
+        internal int EndLine;
+        internal int EndCol;
     }
 
-    // Blittable mirror of the FffDirSearchResult header — v0.10.1 exports no count accessor,
-    // so the count is read from the struct (layout matches the tagged v0.10.1 fff.h).
+    // Blittable mirror of the FffSearchResult header, read for the parsed query location
+    // (layout matches the tagged v0.10.1 fff.h).
     [StructLayout(LayoutKind.Sequential)]
-    private struct FffDirSearchResultHeader
+    private struct FffSearchResultHeader
     {
         internal IntPtr Items;
         internal IntPtr Scores;
         internal uint Count;
         internal uint TotalMatched;
+        internal uint TotalFiles;
+        internal FffLocation Location;
+    }
+
+    // Blittable mirror of FffMixedItem: u8 item_type (C pads it to 8 before the first pointer,
+    // as does sequential layout here), three char*, five 8-byte ints, bool (tail-padded).
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FffMixedItem
+    {
+        internal byte ItemType;
+        internal IntPtr RelativePath;
+        internal IntPtr DisplayName;
+        internal IntPtr GitStatus;
+        internal ulong Size;
+        internal ulong Modified;
+        internal long AccessFrecencyScore;
+        internal long ModificationFrecencyScore;
+        internal long TotalFrecencyScore;
+        internal byte IsBinary;
+    }
+
+    // Blittable mirror of the FffMixedSearchResult header — v0.10.1 exports no count accessor,
+    // so the count is read from the struct (layout matches the tagged v0.10.1 fff.h).
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FffMixedSearchResultHeader
+    {
+        internal IntPtr Items;
+        internal IntPtr Scores;
+        internal uint Count;
+        internal uint TotalMatched;
+        internal uint TotalFiles;
         internal uint TotalDirs;
+        internal FffLocation Location;
     }
 }

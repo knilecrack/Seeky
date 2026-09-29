@@ -162,8 +162,15 @@ same — these failures are all silent or cryptic without instrumentation.
   `SeekyGrepWordCommand.cs` — "Seeky: Find Files" (Ctrl+Shift+Alt+O) / "Seeky: Live Grep"
   (Ctrl+Shift+Alt+I) / "Seeky: Symbols" (Ctrl+Shift+Alt+,) / "Seeky: Grep Word Under Cursor"
   (Ctrl+Shift+Alt+G), Tools menu → `SeekyModalWindowManager.ShowAsync(Extensibility, context,
-  mode, initialQuery)`. (The original `SeekyToolWindowCommand` opened the dead-end Remote UI tool
-  window; see git history.)
+  mode, initialQuery)`. `SeekySearchCurrentFileCommand.cs` — "Seeky: Search Current File"
+  (Ctrl+Shift+Alt+F) opens the same popup in `buffer` mode.
+- `BufferSearch.cs` — the Current File (`buffer`) mode: Live Grep's plain / regex / fuzzy
+  matching run in-process over the active editor's lines (so unsaved edits are searched too;
+  fff only sees disk). Plain/regex are smart-case and return hits in line order, fuzzy uses
+  `FuzzyMatcher` best-first. The document is read once per popup via the command's client
+  context (on the thread pool — editor RPC deadlocks the pump) and cached until the next show.
+  (The original `SeekyToolWindowCommand` opened the dead-end Remote UI tool window; see git
+  history.)
 - `EditorWord.cs` — the term Grep Word Under Cursor searches for: the editor selection if there is
   one, else the identifier spanning the caret (`Selection.InsertionPosition` →
   `GetContainingLine()` → expand over letters/digits/underscore). Caret on whitespace yields
@@ -209,14 +216,19 @@ same — these failures are all silent or cryptic without instrumentation.
 - `SeekyToolWindow.cs` / `SeekyToolWindowContent.cs` / `.xaml` — **dead-end Remote UI experiment,
   kept for documentation only** (see above).
 - `WebUI/index.html` — **Telescope-style search UI** (plain JS/CSS, no build step): prompt row
-  (`Find Files> ` / `Live Grep (fuzzy)> ` / `Symbols> ` / `Git Modified> `) at the bottom,
+  (`Find Files> ` / `Live Grep (fuzzy)> ` / `Current File (fuzzy)> ` / `Symbols> ` /
+  `Git Modified> ` / `Files & Folders> `) at the bottom,
   results left + preview pane right (~50/50), status line above the prompt. Modes cycle with
-  **Tab** or **Ctrl+G**: files → grep → symbols → git. (A fifth "Directories" mode exists in the
-  backend but is hidden from the cycle for now.) Symbols is the only mode that searches on an
-  empty query — it lists the workspace's symbols, so the picker is useful before the first
+  **Tab** or **Ctrl+G**: files → grep → current file → symbols → git → files & folders. Current
+  File behaves like Live Grep scoped to the active document (same rows, Ctrl+R sub-modes and
+  Ctrl+D filter). Files & Folders is one fuzzy list over both (`fff_search_mixed`). A Find Files
+  or Files & Folders query ending in `:line[:col]` (`SeekyModalWindowManager.cs:1052:9`) opens
+  the pick at that position — fff parses the suffix off the fuzzy text and returns it on the
+  result header. Symbols is the only mode that searches on an empty query — it lists the workspace's symbols, so the picker is useful before the first
   keystroke; its rows render `kind  Name  path:line` with the fuzzy highlight on the **name**
   (`nameRanges`), not the source line. Other keys: **Ctrl+R** cycles grep sub-mode
-  plain → regex → **fuzzy** (default — fff's signature mode), **Ctrl+D** toggles a
+  plain → regex → **fuzzy** (default — fff's signature mode) → **any** (`TODO|FIXME *.cs`:
+  lines matching any `|`-separated literal, via `fff_multi_grep`), **Ctrl+D** toggles a
   definitions-only filter on grep results (`SymbolClassifier`-tagged, shown with a
   `def` badge), **↑/↓** (and **Ctrl+J/K**, **Ctrl+N/P** readline-style) move — and **↑ in an
   empty prompt with no results listed cycles past
@@ -298,8 +310,16 @@ fff's signature **fuzzy grep** mode plus frecency learning. `FffNativeClient` im
 - **Query history**: `fff_get_historical_query` reads past queries from the history LMDB
   (populated by `fff_track_query` picks); posted to the page on every show, cycled with ↑ in
   an empty prompt.
-- **Directory search**: `fff_search_directories` powers the "Directories" mode; dir previews
-  list folder entries, and opening a directory reveals it in Windows Explorer.
+- **Files & Folders**: `fff_search_mixed` powers the `mixed` mode (it replaced the hidden
+  `fff_search_directories` "Directories" mode). v0.10.1 exports no count or per-field accessors
+  for it, so the `FffMixedSearchResult` header and `FffMixedItem` are read as structs. Folder
+  previews list their entries, and opening a folder reveals it in Windows Explorer.
+- **Query location**: `Foo.cs:42:9` in Find Files and Files & Folders — `FffLocation` is read
+  off the `FffSearchResult` / `FffMixedSearchResult` header (no accessor in v0.10.1) and
+  attached to every file row.
+- **Multi-pattern grep** (`any` sub-mode): `fff_multi_grep` takes the patterns (`\n`-joined) and
+  the file constraints as separate arguments, so `SplitMultiGrepQuery` moves constraint-shaped
+  tokens (`*.cs`, `src/`, `./x`, `!test/`, `git:…`) to the constraints and splits the rest on `|`.
 - **Match highlighting**: per-match `FffMatchRange` spans (`fff_grep_match_get_match_ranges_count`
   / `_get_match_range`) are read for grep results. They arrive as **byte offsets into the UTF-8
   line** and are converted in C# to UTF-16 char indices (re-encode the line with
@@ -316,9 +336,9 @@ Page → host:
 
 ```json
 { "type": "search",  "query": "foo", "mode": "grep", "grepMode": "fuzzy" }
-                                                    // mode: "files" | "grep" | "git" | "dirs"
-                                                    //     | "symbols"
-                                                    // grepMode: "plain" | "regex" | "fuzzy"
+                                                    // mode: "files" | "grep" | "buffer" | "git"
+                                                    //     | "mixed" | "symbols"
+                                                    // grepMode: "plain" | "regex" | "fuzzy" | "any"
                                                     // symbols is the only mode sent with an empty
                                                     //   query (it lists the workspace's symbols)
 { "type": "preview", "path": "src/a.cs", "line": 42, "binary": false }
@@ -391,9 +411,10 @@ named-pipe control channel, `\\.\pipe\seekyvs-<devenvPid>`, started at extension
   in this SDK), which is why the server is a graph service and not an extension field.
 - **Protocol**: one UTF-8 line per request over a long-lived connection — `mode` or
   `mode|query`, split on the first `|` (a grep query may itself contain `|`); an empty
-  query behaves like none. Modes are `ShowAsync`'s whitelist (`files`, `grep`, `git`,
-  `dirs`, `symbols`; anything else falls back to `files`). Each request is answered `ok`
-  or `err <message>`. Dispatch is `SeekyModalWindowManager.ShowAsync` with a **null client
+  query behaves like none. Modes are `ShowAsync`'s whitelist (`files`, `grep`, `buffer`,
+  `git`, `mixed`, `symbols`; `dirs` is still accepted as an alias for `mixed`; anything else
+  falls back to `files` — `buffer` needs a client context for the active editor, so over the
+  pipe it reports "no editor was active"). Each request is answered `ok` or `err <message>`. Dispatch is `SeekyModalWindowManager.ShowAsync` with a **null client
   context** (there is no command behind a pipe request) — workspace resolution then skips
   the active-document fallback and uses the solution directory.
 
