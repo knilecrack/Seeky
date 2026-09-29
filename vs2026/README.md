@@ -274,7 +274,7 @@ after that run builds clean but is **pending its own F5 verification** — see "
 ## Backend: native fff-c FFI (current)
 
 The search backend is the **native fff C FFI library** (`Tools/fff_c.dll`, from
-[dmtrKovalenko/fff](https://github.com/dmtrKovalenko/fff) release v0.10.1, asset
+[dmtrKovalenko/fff](https://github.com/dmtrKovalenko/fff) release v0.11.0, asset
 `c-lib-x86_64-pc-windows-msvc.dll`, sha256-verified — the same Rust engine that powers the VS
 Code Seeky via `@ff-labs/fff-node`). It replaced the earlier fff-mcp stdio sidecar (MCP server,
 deleted — its probe scripts `vs2026/probe-fff-mcp*.mjs` remain as historical dev tools). Going

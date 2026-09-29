@@ -33,7 +33,7 @@ public class SeekyGrepWordCommand : Command
     public override CommandConfiguration CommandConfiguration => new("%SeekyVS.SeekyGrepWordCommand.DisplayName%")
     {
         Placements = [CommandPlacement.KnownPlacements.ToolsMenu],
-        Icon = new(ImageMoniker.KnownValues.Search, IconSettings.IconAndText),
+        Icon = new CommandIconConfiguration(ImageMoniker.KnownValues.Search, IconSettings.IconAndText),
 
         // All four Seeky commands sit on the Ctrl+Shift+Alt family: NeoVS never claims
         // Ctrl+Alt chords, so they always reach Visual Studio's command system.
