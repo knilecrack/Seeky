@@ -10,8 +10,9 @@ using System.Text.Json;
 
 /// <summary>
 /// Most-recently-used files, most recent first, as absolute paths — what Find Files lists on an
-/// empty prompt. Fed by Seeky picks, documents VS opens (<see cref="RecentFilesListener"/>), and
-/// the file that is active when a Find Files popup opens.
+/// empty prompt. Fed by Seeky picks, documents VS opens (<c>RecentFilesListener</c>; in VSNeo,
+/// every editor that takes focus), and the file that is active when a Find Files popup opens.
+/// VSNeo compiles this same file, so the two extensions share one list.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -29,7 +30,11 @@ internal static class RecentFiles
 {
     private const int MaxEntries = 500;
 
+#if NETFRAMEWORK
+    private static readonly object Gate = new(); // VSNeo's .NET Framework build has no Lock type
+#else
     private static readonly System.Threading.Lock Gate = new();
+#endif
 
     private static readonly string StorePath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -39,8 +44,13 @@ internal static class RecentFiles
     private static List<string>? entries;
 
     /// <summary>Moves <paramref name="fullPath"/> to the front of the list and persists it.</summary>
-    internal static void Touch(string fullPath)
+    internal static void Touch(string? fullPath)
     {
+        if (string.IsNullOrEmpty(fullPath))
+        {
+            return;
+        }
+
         string path;
         try
         {
@@ -96,11 +106,26 @@ internal static class RecentFiles
             + Path.DirectorySeparatorChar;
         return snapshot
             .Where(p => p.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-            .Select(p => (Full: p, Relative: p[prefix.Length..].Replace(Path.DirectorySeparatorChar, '/')))
+            .Select(p => (Full: p, Relative: p.Substring(prefix.Length).Replace(Path.DirectorySeparatorChar, '/')))
             .Where(p => !string.Equals(p.Relative, exclude, StringComparison.OrdinalIgnoreCase) && File.Exists(p.Full))
             .Take(max)
             .Select(p => p.Relative)
             .ToList();
+    }
+
+    /// <summary>
+    /// Up to <paramref name="max"/> recent files that still exist, anywhere, most recent first,
+    /// as absolute paths (VSNeo's Recent Files picker and its buffer ordering).
+    /// </summary>
+    internal static List<string> All(int max)
+    {
+        string[] snapshot;
+        lock (Gate)
+        {
+            snapshot = [.. EnsureLoaded()];
+        }
+
+        return snapshot.Where(File.Exists).Take(max).ToList();
     }
 
     /// <summary>Caller must hold <see cref="Gate"/>.</summary>

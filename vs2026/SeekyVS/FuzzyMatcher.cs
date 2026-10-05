@@ -133,8 +133,8 @@ internal static class FuzzyMatcher
             if (found == previousMatch + 1)
             {
                 gain += ConsecutiveBonus;
-                var last = spans[^1];
-                spans[^1] = (last.Start, found + 1);
+                var last = spans[spans.Count - 1];
+                spans[spans.Count - 1] = (last.Start, found + 1);
             }
             else
             {

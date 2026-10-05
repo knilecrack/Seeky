@@ -254,7 +254,9 @@ internal sealed record SeekyState
         }
     }
 
-    private static int ClampFontSize(int size) => Math.Clamp(size, MinFontSize, MaxFontSize);
+    // By hand rather than Math.Clamp, which .NET Framework (VSNeo's build of this file) lacks.
+    private static int ClampFontSize(int size) =>
+        size < MinFontSize ? MinFontSize : size > MaxFontSize ? MaxFontSize : size;
 
     private static string? NormalizeGrepMode(string? mode) =>
         mode is "plain" or "regex" or "fuzzy" or "any" ? mode : null;
@@ -263,6 +265,7 @@ internal sealed record SeekyState
     private static string? NormalizeTheme(string? theme) =>
         theme is "phosphor" or "dark" or "light" or "tokyo-night" or "cyberpunk"
             or "catppuccin-latte" or "catppuccin-frappe" or "catppuccin-macchiato" or "catppuccin-mocha"
+            or "nvim" // VSNeo: the colorscheme's own colors; the page falls back without them
             ? theme
             : null;
 

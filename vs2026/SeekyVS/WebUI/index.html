@@ -177,6 +177,12 @@
       --mhl-fg: #fab387;
       --mhl-bg: transparent;
     }
+    /* nvim (VSNeo) — the colorscheme's own float colors. VSNeo's companion pushes them and
+       applyPalette sets them inline on <html>; only the flat-look switches live here. */
+    :root[data-theme="nvim"] {
+      --glow: transparent;
+      --crt: none;
+    }
     * { box-sizing: border-box; }
     html, body { height: 100%; }
     body {
@@ -223,6 +229,9 @@
       text-shadow: 0 0 8px color-mix(in srgb, var(--glow) 45%, transparent);
     }
     #prompt .chevron { color: var(--accent); text-shadow: 0 0 8px color-mix(in srgb, var(--glow) 50%, transparent); }
+    /* Prompt normal mode (VSNeo, opt-in): the prompt stops taking text, j/k move the rows. */
+    #prompt.normal .chevron { color: var(--amber); }
+    #prompt.normal #query { caret-color: transparent; }
     #query {
       flex: 1;
       background: transparent;
@@ -372,6 +381,33 @@
     }
     /* Readout marker: this line is the machine talking, not content. */
     #status::before { content: '▸ '; color: var(--accent); }
+    /* F1 / Ctrl+/ key help: a sheet over the results and preview, any key dismisses it. */
+    #help {
+      position: fixed;
+      inset: 12px 12px auto 12px;
+      max-height: calc(100% - 84px);
+      overflow: auto;
+      padding: 12px 16px;
+      background: var(--bg-alt);
+      border: 1px solid var(--accent);
+      color: var(--fg);
+      z-index: 10;
+      column-width: 30em;
+      column-gap: 28px;
+    }
+    #help[hidden] { display: none; }
+    #help h3 {
+      margin: 0 0 6px;
+      color: var(--accent);
+      font-size: 1em;
+      letter-spacing: .05em;
+      break-after: avoid;
+    }
+    #help section { break-inside: avoid; margin-bottom: 14px; }
+    #help .row { display: flex; gap: 12px; line-height: 1.6; }
+    #help .keys { flex: 0 0 15em; color: var(--amber); }
+    #help .what { color: var(--fg); }
+    #help .foot { column-span: all; color: var(--fg-dim); margin-top: 4px; }
   </style>
 </head>
 <body>
@@ -410,9 +446,17 @@
                                                                 an empty query (the workspace's
                                                                 symbols / recent files)
                     { type: 'preview', path, line?, binary?, directory? }
-                    { type: 'open', path, line?, col?, directory? }
+                    { type: 'open', path, line?, col?, directory?, split? }
                                                                 directory=true opens the folder
-                                                                in Windows Explorer; col is 1-based
+                                                                in Windows Explorer; col is 1-based;
+                                                                split (VSNeo): 'vertical' (Ctrl+V)
+                                                                or 'horizontal' (Ctrl+X)
+                    { type: 'pick', mode, name }                VSNeo list modes whose Enter is an
+                                                                nvim action (a mark jump, a register
+                                                                paste, a mapping, a history entry)
+                    { type: 'quickfix', title, items }          VSNeo, Ctrl+Q: the visible rows,
+                                                                best first, as [{ path, line, text }]
+                                                                for nvim's quickfix list
                     { type: 'close' }
                     { type: 'resizeWindow', step }              +1 grow / -1 shrink / 0 default;
                                                                 the host owns the HWND and the
@@ -431,6 +475,10 @@
                     grep only, may be [];
                     symbols: name=symbol name, +kind/line/text and nameRanges = [start,end)
                     char indices into NAME — symbol rows highlight the name, not the line)
+                    VSNeo list modes (buffers, oldfiles, marks, registers, diagnostics, keymaps,
+                    command_history, search_history; host-entered, list on an empty query):
+                    items [{ name, kind, detail, nameRanges, path?, line?, col?, preview?,
+                    pick? }] - pick rows send 'pick', the rest 'open'; preview is shown as is
                     { type: 'preview', path, content, line? }   dirs: content = entry listing
                     { type: 'preview', path, binary: true }     binary files: no content
                     { type: 'status', message }
@@ -447,8 +495,17 @@
                     { type: 'history', queries }           past queries (fff track_query
                                                            history), most recent first;
                                                            ↑ in an empty prompt cycles them
-                    { type: 'setState', fontFamily, fontSize, grepMode, defsOnly, theme }
-                                                           restored popup state. fontFamily is
+                    { type: 'setState', fontFamily, fontSize, grepMode, defsOnly, theme,
+                              palette?, promptNormal?, vsneo? }
+                                                           palette, promptNormal and vsneo are
+                                                           VSNeo's: vsneo=true turns on the keys
+                                                           only it handles (Ctrl+V/X split,
+                                                           Ctrl+Q quickfix); palette is
+                                                           the colorscheme's colors for the 'nvim'
+                                                           theme ({ 'bg': '#rrggbb', … }, CSS
+                                                           variable names without the dashes),
+                                                           promptNormal vim.g.vsneo_seeky_prompt_normal.
+                                                           The rest is the restored popup state. fontFamily is
                                                            read-only (hand-edited in
                                                            %LOCALAPPDATA%\SeekyVS\settings.json);
                                                            the rest round-trips via 'stateChanged'
@@ -471,6 +528,7 @@
       <pre id="preview-content"></pre>
     </div>
   </div>
+  <div id="help" hidden></div>
   <div id="status">starting…</div>
   <div id="prompt">
     <span id="mode-label">Find Files</span>
@@ -490,7 +548,12 @@
       var previewContentEl = document.getElementById('preview-content');
       var statusEl = document.getElementById('status');
 
-      var HINT = 'Tab cycles Files/Grep/Current File/Symbols/Git/Files+Folders · Ctrl+N/P move · Ctrl+R grep mode · Ctrl+D defs · Ctrl+F grep in selected · Ctrl+T theme · Ctrl+±/0 font · Ctrl+Shift+±/0 window';
+      // VSNeo (setState vsneo=true) handles 'open' with a split and 'quickfix'; standalone
+      // SeekyVS does not, so there Ctrl+V stays paste and the hint leaves those keys out.
+      var vsneo = false;
+      var HINT_SEEKY = 'F1 or Ctrl+/ all keys · Tab next mode · Enter open · Ctrl+R grep mode · Ctrl+D defs · Esc close';
+      var HINT_VSNEO = 'Ctrl+/ all keys and pickers · Tab next mode · Enter open · Ctrl+V/X split · Ctrl+Q quickfix · Esc close';
+      var HINT = HINT_SEEKY;
 
       var mode = 'files'; // 'files' | 'grep' | 'buffer' | 'git' | 'mixed' | 'symbols' | 'path'
       var grepMode = 'fuzzy'; // 'plain' | 'regex' | 'fuzzy' | 'any' (fuzzy is fff's signature mode)
@@ -509,17 +572,51 @@
       var THEMES = [
         'phosphor', 'dark', 'light', 'tokyo-night', 'cyberpunk',
         'catppuccin-latte', 'catppuccin-frappe', 'catppuccin-macchiato', 'catppuccin-mocha',
+        'nvim',
       ];
       var theme = THEMES[0];
 
+      // VSNeo: the colorscheme's colors for the 'nvim' theme, keyed by CSS variable name
+      // without the dashes; null until the host has them (no nvim, or not up yet).
+      var palette = null;
+      var PALETTE_VARS = ['bg', 'bg-alt', 'bg-sel', 'border', 'fg', 'fg-dim', 'accent', 'hot',
+        'amber', 'green', 'hl', 'mhl-fg', 'mhl-bg'];
+
+      // VSNeo, vim.g.vsneo_seeky_prompt_normal: Escape leaves the prompt for a normal mode
+      // (j/k, gg/G, i/a back) and a second Escape closes. Off: one Escape closes.
+      var promptNormal = false;
+      var inNormal = false;
+      var pendingG = false;
+      var promptEl = document.getElementById('prompt');
+
       function applyTheme(name) {
-        theme = THEMES.indexOf(name) >= 0 ? name : THEMES[0];
+        theme = THEMES.indexOf(name) >= 0 && (name !== 'nvim' || palette) ? name : THEMES[0];
         document.documentElement.setAttribute('data-theme', theme);
+        applyPalette();
+      }
+
+      // Inline variables beat every stylesheet block, so they are set only for 'nvim' and
+      // removed for any other theme.
+      function applyPalette() {
+        var style = document.documentElement.style;
+        PALETTE_VARS.forEach(function (name) {
+          var value = theme === 'nvim' && palette ? palette[name] : null;
+          if (typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value)) {
+            style.setProperty('--' + name, value);
+          } else {
+            style.removeProperty('--' + name);
+          }
+        });
       }
 
       // Ctrl+T: next theme, live, reported like the other state so the host saves it on close.
+      // 'nvim' is skipped while there is no palette to show.
       function cycleTheme() {
-        applyTheme(THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length]);
+        var next = (THEMES.indexOf(theme) + 1) % THEMES.length;
+        if (THEMES[next] === 'nvim' && !palette) {
+          next = (next + 1) % THEMES.length;
+        }
+        applyTheme(THEMES[next]);
         sendState();
         statusEl.textContent = 'theme ' + theme + ' — Ctrl+T cycles; saved on close';
       }
@@ -557,6 +654,23 @@
         }
       }
 
+      // VSNeo's list pickers, fed by Visual Studio and nvim (Telescope's names). Host-entered
+      // only, like 'path'; Tab out of one goes to Find Files.
+      var LIST_MODES = {
+        buffers: 'Buffers',
+        oldfiles: 'Recent Files',
+        marks: 'Marks',
+        registers: 'Registers',
+        diagnostics: 'Diagnostics',
+        keymaps: 'Keymaps',
+        command_history: 'Command History',
+        search_history: 'Search History',
+      };
+
+      function isListMode() {
+        return LIST_MODES.hasOwnProperty(mode);
+      }
+
       function send(message) {
         if (bridge) {
           bridge.postMessage(message);
@@ -569,7 +683,7 @@
         var query = queryEl.value;
         // Symbols, Symbol Path and Find Files (recent files) are browsable lists: an empty query
         // lists rather than clearing, so the picker is useful before the first keystroke.
-        if (query.length === 0 && mode !== 'symbols' && mode !== 'path' && mode !== 'files') {
+        if (query.length === 0 && mode !== 'symbols' && mode !== 'path' && mode !== 'files' && !isListMode()) {
           // Clean state: no query, no search, no results.
           items = [];
           selected = -1;
@@ -593,6 +707,10 @@
       }
 
       function updatePromptLabel() {
+        if (isListMode()) {
+          modeLabelEl.textContent = LIST_MODES[mode];
+          return;
+        }
         modeLabelEl.textContent = mode === 'files'
           ? 'Find Files'
           : mode === 'git'
@@ -625,12 +743,12 @@
       // every show, so the page is already in a clean state, and if 'setMode' races ahead
       // of 'reset' it must not clobber an in-flight typed query.
       function applyMode(newMode) {
-        if (newMode !== 'files' && newMode !== 'grep' && newMode !== 'buffer' && newMode !== 'git' && newMode !== 'mixed' && newMode !== 'symbols' && newMode !== 'path') {
+        if (newMode !== 'files' && newMode !== 'grep' && newMode !== 'buffer' && newMode !== 'git' && newMode !== 'mixed' && newMode !== 'symbols' && newMode !== 'path' && !LIST_MODES.hasOwnProperty(newMode)) {
           return;
         }
         mode = newMode;
         updatePromptLabel();
-        if (mode === 'symbols' || mode === 'path' || mode === 'files') {
+        if (mode === 'symbols' || mode === 'path' || mode === 'files' || isListMode()) {
           // These list on an empty query — kick off as soon as the popup opens.
           sendSearch();
         }
@@ -655,9 +773,16 @@
           return;
         }
         defsOnly = !defsOnly;
+        var keep = isVisible(selected);
+        if (!keep) {
+          selected = nearestVisible(0, 1);
+        }
         renderResults();
         updateResultStatus();
         sendState();
+        if (!keep) {
+          showSelectedPreview();
+        }
       }
 
       // Ctrl+F on a file-list row: switch to Live Grep scoped to it — 'folder/ ' for a folder,
@@ -692,6 +817,39 @@
           }
         }
         return out;
+      }
+
+      // The selection only ever rests on a visible row: with defs only on, items[0] can be a
+      // hidden non-definition, and selecting it left no row lit while the preview and Enter
+      // went to a line the list did not show.
+      function isVisible(index) {
+        return index >= 0 && index < items.length &&
+          (!defsOnly || !isGrepLike() || items[index].isDefinition === true);
+      }
+
+      // The first visible index from `from` stepping by `step` (+1 or -1), or -1 when none.
+      function nearestVisible(from, step) {
+        for (var i = from; i >= 0 && i < items.length; i += step) {
+          if (isVisible(i)) {
+            return i;
+          }
+        }
+        return -1;
+      }
+
+      // One row toward `step`, staying put at either end of the visible rows.
+      function stepSelection(step) {
+        var next = nearestVisible(selected + step, step);
+        select(next >= 0 ? next : selected);
+      }
+
+      function showSelectedPreview() {
+        if (selected >= 0) {
+          requestPreview(items[selected]);
+        } else {
+          previewTitleEl.textContent = '';
+          previewContentEl.textContent = '';
+        }
       }
 
       function updateResultStatus() {
@@ -786,7 +944,22 @@
           if (badge && mode !== 'symbols') {
             row.appendChild(badge);
           }
-          if (mode === 'path') {
+          if (isListMode()) {
+            // "[kind]  name  detail": the name carries the match highlight.
+            var listKind = document.createElement('span');
+            listKind.className = 'kind-badge';
+            listKind.textContent = item.kind || '';
+            row.appendChild(listKind);
+            var listName = document.createElement('span');
+            appendHighlightedSegments(listName, item.name || '', item.nameRanges);
+            row.appendChild(listName);
+            if (item.detail) {
+              var listDetail = document.createElement('span');
+              listDetail.className = 'sym-location';
+              listDetail.textContent = item.detail;
+              row.appendChild(listDetail);
+            }
+          } else if (mode === 'path') {
             // Document outline: "kind  Name  :line", indented by declaration depth (em so
             // Ctrl+± font scaling keeps proportions). All rows are the same file — the path
             // goes on the tooltip.
@@ -868,7 +1041,7 @@
           if (index + 1 === matchLine) {
             line.className = `${line.className} hl`;
             hl = line;
-            // Span-level highlight of the match ranges within the match line (grep only).
+            // Span-level highlight of the match ranges within the match line (line modes only).
             var sel = items[selected];
             if (isGrepLike() && sel && sel.ranges && sel.ranges.length > 0) {
               appendHighlightedSegments(line, lineText, sel.ranges);
@@ -893,6 +1066,12 @@
         if (item.isBinary) {
           previewTitleEl.textContent = item.path || '';
           previewContentEl.textContent = 'binary file — no preview';
+          return;
+        }
+        if (!item.path) {
+          // VSNeo list rows with nothing on disk (a register, a mapping): the row's own text.
+          previewTitleEl.textContent = item.name || '';
+          previewContentEl.textContent = typeof item.preview === 'string' ? item.preview : (item.detail || '');
           return;
         }
         send({ type: 'preview', path: item.path, line: item.line, binary: item.isBinary === true, directory: item.isDirectory === true });
@@ -929,14 +1108,200 @@
         requestPreview(items[index]);
       }
 
-      function openSelected() {
+      // split (VSNeo): undefined, 'vertical' (Ctrl+V) or 'horizontal' (Ctrl+X), Telescope's
+      // open variants. A folder ignores it - it opens in Explorer either way.
+      function openSelected(split) {
         var item = items[selected];
-        if (item) {
-          // col only from Find Files / Files & Folders (the ':line:col' query suffix). Grep rows
-          // carry fff's 0-based byte column, which is not the 1-based char column the host expects.
-          var fromQuery = mode === 'files' || mode === 'mixed';
-          send({ type: 'open', path: item.path, line: item.line, col: fromQuery ? item.col : undefined, directory: item.isDirectory === true });
+        if (item && item.pick) {
+          send({ type: 'pick', mode: mode, name: item.name });
+          return;
         }
+        if (item) {
+          // col only from Find Files / Files & Folders (the ':line:col' query suffix) and the
+          // Error List (1-based already). Grep rows carry fff's 0-based byte column, which is not
+          // the 1-based char column the host expects.
+          var fromQuery = mode === 'files' || mode === 'mixed' || mode === 'diagnostics';
+          send({ type: 'open', path: item.path, line: item.line, col: fromQuery ? item.col : undefined, directory: item.isDirectory === true, split: split });
+        }
+      }
+
+      // Ctrl+Q (VSNeo): the visible rows, best first, into nvim's quickfix list. The host
+      // fills in columns (it knows where each row lands) and closes the picker.
+      function sendQuickfix() {
+        var rows = [];
+        visibleIndices().forEach(function (i) {
+          var item = items[i];
+          if (!item.isDirectory && item.path) {
+            rows.push({ path: item.path, line: item.line || 1, text: item.text || item.name || item.path });
+          }
+        });
+        if (rows.length === 0) {
+          statusEl.textContent = 'nothing to send to quickfix';
+          return;
+        }
+        send({ type: 'quickfix', title: modeLabelEl.textContent + ' > ' + queryEl.value, items: rows });
+      }
+
+      // ---------------------------------------------------------------- key help (F1, Ctrl+/)
+
+      // [keys, what it does, when it applies]. 'vsneo' rows show only under VSNeo (setState
+      // vsneo=true), 'seeky' rows only in standalone SeekyVS, 'normal' rows only with prompt
+      // normal mode on: the sheet lists what this host really does. Keep it in step with
+      // onPromptKeyDown, onNormalKeyDown and the pickers each host serves.
+      var HELP = [
+        ['Move and open', [
+          ['↑ ↓  Ctrl+N/P  Ctrl+J/K', 'move through the results'],
+          ['Enter', 'open the selected result'],
+          ['Ctrl+V', 'open it in a new vertical tab group (:vsp)', 'vsneo'],
+          ['Ctrl+X', 'open it in a split (:sp)', 'vsneo'],
+          ['Ctrl+Q', 'send the results to the quickfix list and jump to the first; then :cnext / :cprev (or ]q / [q)', 'vsneo'],
+          ['↑ on an empty prompt', 'past queries'],
+          ['Esc', 'close the picker'],
+        ]],
+        ['Modes and filters', [
+          ['Tab  Ctrl+G', 'next mode: Files, Grep, Current File, Symbols, Git, Files & Folders'],
+          ['Ctrl+R', 'grep sub-mode: plain, regex, fuzzy, any'],
+          ['Ctrl+D', 'grep: definitions only'],
+          ['Ctrl+F', 'grep inside the selected file or folder'],
+        ]],
+        ['In the query', [
+          ['Foo.cs:42:9', 'Files: open at line 42, column 9'],
+          ['*.cs needle', 'Grep: only in .cs files (folder/ works too)'],
+          ['a|b', 'Grep in any mode: either literal'],
+          ['(empty)', 'Files: your recent files'],
+        ]],
+        ['Prompt normal mode', [
+          ['Esc', 'leave the prompt for normal mode; Esc again closes', 'normal'],
+          ['j / k', 'next / previous result', 'normal'],
+          ['gg / G', 'top / bottom result', 'normal'],
+          ['i  a  I  A', 'back to typing', 'normal'],
+          ['?', 'this help', 'normal'],
+        ]],
+        ['Look', [
+          ['Ctrl+T', 'next colour theme', 'seeky'],
+          ['Ctrl+T', 'next colour theme (nvim = your colorscheme)', 'vsneo'],
+          ['Ctrl+±  Ctrl+0', 'font size / reset'],
+          ['Ctrl+Shift+±  Ctrl+Shift+0', 'window size / reset'],
+          ['F1  Ctrl+/', 'this help (Esc closes it)'],
+        ]],
+        ['Pickers  (:Seeky <name>, or the keys)', [
+          ['files  ␣sf  C-S-A-O', 'find files', 'vsneo'],
+          ['grep  ␣sg  C-S-A-I', 'live grep', 'vsneo'],
+          ['grep word  ␣sw  C-S-A-G', 'grep the word under the cursor', 'vsneo'],
+          ['lines  ␣s/  C-S-A-L', 'search the current file', 'vsneo'],
+          ['symbols  ␣ss  C-S-A-,', 'workspace symbols', 'vsneo'],
+          ['outline  ␣so  C-S-A-B', 'document outline', 'vsneo'],
+          ['git  ␣sm  C-S-A-M', 'git modified files', 'vsneo'],
+          ['mixed', 'files and folders', 'vsneo'],
+          ['resume  ␣sr  C-S-A-R', 'reopen the last picker as you left it', 'vsneo'],
+          ['buffers  ␣sb', 'open documents', 'vsneo'],
+          ['oldfiles  ␣s.', 'recent files, any folder', 'vsneo'],
+          ["marks  ␣s'", 'marks; Enter jumps', 'vsneo'],
+          ['registers  ␣s"', 'registers; Enter pastes', 'vsneo'],
+          ['diagnostics  ␣sd', 'the Error List', 'vsneo'],
+          ['keymaps  ␣sk', 'your mappings; Enter runs one', 'vsneo'],
+          ['command_history  ␣s:', 'past commands; Enter runs one', 'vsneo'],
+          ['search_history  ␣s?', 'past searches; Enter searches', 'vsneo'],
+        ]],
+      ];
+      var HELP_NOTE_VSNEO = '␣ is <leader>; those keys are only set where your config leaves them free. C-S-A is Ctrl+Shift+Alt and works in insert mode too.';
+
+      var helpEl = document.getElementById('help');
+
+      function helpOpen() {
+        return !helpEl.hidden;
+      }
+
+      function renderHelp() {
+        helpEl.textContent = '';
+        HELP.forEach(function (group) {
+          var rows = group[1].filter(function (row) {
+            return row[2] === undefined || (row[2] === 'vsneo' && vsneo) || (row[2] === 'seeky' && !vsneo) ||
+              (row[2] === 'normal' && promptNormal);
+          });
+          if (rows.length === 0) {
+            return;
+          }
+          var section = document.createElement('section');
+          var title = document.createElement('h3');
+          title.textContent = group[0];
+          section.appendChild(title);
+          rows.forEach(function (row) {
+            var line = document.createElement('div');
+            line.className = 'row';
+            var keys = document.createElement('span');
+            keys.className = 'keys';
+            keys.textContent = row[0];
+            var what = document.createElement('span');
+            what.className = 'what';
+            what.textContent = row[1];
+            line.appendChild(keys);
+            line.appendChild(what);
+            section.appendChild(line);
+          });
+          helpEl.appendChild(section);
+        });
+        var foot = document.createElement('div');
+        foot.className = 'foot';
+        foot.textContent = (vsneo ? HELP_NOTE_VSNEO + ' ' : '') + 'Any key closes this help.';
+        helpEl.appendChild(foot);
+      }
+
+      function showHelp(on) {
+        if (on) {
+          renderHelp(); // vsneo / promptNormal can change between shows
+        }
+        helpEl.hidden = !on;
+      }
+
+      function isHelpKey(e) {
+        return e.key === 'F1' || (e.ctrlKey && (e.key === '/' || e.code === 'Slash')) ||
+          (inNormal && e.key === '?');
+      }
+
+      // ---------------------------------------------------------------- prompt normal mode
+
+      function setNormal(on) {
+        inNormal = on;
+        pendingG = false;
+        promptEl.classList.toggle('normal', on);
+        queryEl.readOnly = on;
+        statusEl.textContent = on
+          ? 'NORMAL — j/k move · gg/G ends · Enter opens · i/a back to the prompt · ? help · Esc closes'
+          : HINT;
+      }
+
+      // Plain keys in prompt normal mode. True when the key was consumed. Ctrl chords, arrows,
+      // Tab and Enter fall through to the prompt's own handling.
+      function onNormalKeyDown(e) {
+        if (e.ctrlKey || e.altKey || e.metaKey || e.key.length !== 1) {
+          return false;
+        }
+        var key = e.key;
+        var wasG = pendingG;
+        pendingG = false;
+        var target = -1;
+        if (key === 'j') {
+          stepSelection(-1); // down toward the prompt = lower index
+        } else if (key === 'k') {
+          stepSelection(1);
+        } else if (key === 'g') {
+          if (wasG) {
+            target = nearestVisible(items.length - 1, -1); // the top row
+          } else {
+            pendingG = true;
+          }
+        } else if (key === 'G') {
+          target = nearestVisible(0, 1); // the bottom row, next to the prompt
+        } else if (key === 'i' || key === 'I' || key === 'a' || key === 'A') {
+          setNormal(false);
+          var at = key === 'I' ? 0 : queryEl.value.length;
+          queryEl.setSelectionRange(at, at);
+        }
+        if (target >= 0) {
+          select(target);
+        }
+        return true; // every other printable key is swallowed, as in Vim's normal mode
       }
 
       // Keep keyboard focus in the prompt when a row is clicked: rows are plain divs, so a click
@@ -997,13 +1362,7 @@
         scheduleSearch();
       });
 
-      // On the document, not the input: wherever focus has drifted (a click in the preview, say),
-      // the picker's keys still work. Focus is pulled back to the prompt first, so a printable
-      // key typed while it was elsewhere still lands in the query.
-      document.addEventListener('keydown', function (e) {
-        if (document.activeElement !== queryEl) {
-          queryEl.focus();
-        }
+      function onPromptKeyDown(e) {
         var key = e.key;
         if (key === 'Tab' || (key === 'g' && e.ctrlKey)) {
           e.preventDefault();
@@ -1046,6 +1405,16 @@
         } else if (key === 'f' && e.ctrlKey) {
           e.preventDefault();
           grepInSelected();
+        } else if (key === 'v' && e.ctrlKey && vsneo) {
+          // Telescope's Ctrl+V. It takes the paste chord; Shift+Insert still pastes.
+          e.preventDefault();
+          openSelected('vertical');
+        } else if (key === 'x' && e.ctrlKey && vsneo) {
+          e.preventDefault();
+          openSelected('horizontal');
+        } else if (key === 'q' && e.ctrlKey && vsneo) {
+          e.preventDefault();
+          sendQuickfix();
         } else if (key === 'ArrowDown' || (key === 'j' && e.ctrlKey) || (key === 'n' && e.ctrlKey)) {
           e.preventDefault();
           if (historyIndex >= 0) {
@@ -1057,7 +1426,7 @@
             return; // empty prompt with nothing listed: no selection to move
           } else {
             // column-reverse: visually down = lower index (toward the prompt)
-            select(Math.max(selected - 1, 0));
+            stepSelection(-1);
           }
         } else if (key === 'ArrowUp' || (key === 'k' && e.ctrlKey) || (key === 'p' && e.ctrlKey)) {
           e.preventDefault();
@@ -1071,15 +1440,69 @@
               sendSearch();
             }
           } else {
-            select(Math.min(selected + 1, items.length - 1));
+            stepSelection(1);
           }
         } else if (key === 'Enter') {
           e.preventDefault();
           openSelected();
-        } else if (key === 'Escape') {
-          send({ type: 'close' });
         }
+      }
+      queryEl.addEventListener('keydown', onPromptKeyDown);
+
+      // Whenever the page gains focus (the host activating the window, Alt+Tab back), the
+      // caret goes to the prompt rather than to whatever was focused last.
+      window.addEventListener('focus', function () {
+        queryEl.focus();
       });
+
+      // Capture phase, so it runs wherever focus sits: Escape always closes, and a key typed
+      // with focus elsewhere (the preview pane after a text selection) is sent to the prompt -
+      // moving focus during keydown redirects the character that follows.
+      document.addEventListener('keydown', function (e) {
+        // The help sheet: its own keys toggle it, Escape only closes it, and any other key
+        // closes it and then does what it always does.
+        if (isHelpKey(e) || (helpOpen() && e.key === 'Escape')) {
+          e.preventDefault();
+          e.stopPropagation();
+          showHelp(!helpOpen() && e.key !== 'Escape');
+          queryEl.focus();
+          return;
+        }
+        if (helpOpen() && !['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) {
+          showHelp(false);
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          if (promptNormal && !inNormal) {
+            setNormal(true);
+          } else {
+            send({ type: 'close' });
+          }
+          return;
+        }
+        if (inNormal && onNormalKeyDown(e)) {
+          e.preventDefault();
+          e.stopPropagation();
+          queryEl.focus();
+          return;
+        }
+        if (document.activeElement === queryEl) {
+          return;
+        }
+        // The prompt's own keys (arrows, PageUp/PageDown, Enter, the Ctrl chords) act on the
+        // results wherever focus sits. Refocusing alone was not enough for them: the event was
+        // already dispatched past the prompt, and the arrows scrolled the preview pane last
+        // clicked or scrolled instead of moving the selection.
+        onPromptKeyDown(e);
+        if (e.defaultPrevented) {
+          e.stopPropagation();
+          queryEl.focus();
+          return;
+        }
+        if (!e.ctrlKey && !e.altKey && !e.metaKey) {
+          queryEl.focus();
+        }
+      }, true);
 
       // ---------------------------------------------------------------- host messages
 
@@ -1098,6 +1521,9 @@
               ? Math.min(message.selectedIndex, items.length - 1)
               : -1;
             selected = items.length > 0 ? (hostPick >= 0 ? hostPick : 0) : -1;
+            if (!isVisible(selected)) {
+              selected = nearestVisible(0, 1);
+            }
             renderResults();
             if (hostPick >= 0) {
               var pickedRow = rowByIndex[selected];
@@ -1109,18 +1535,15 @@
               resultsEl.scrollTop = resultsEl.scrollHeight;
             }
             updateResultStatus();
-            if (selected >= 0) {
-              requestPreview(items[selected]);
-            } else {
-              previewTitleEl.textContent = '';
-              previewContentEl.textContent = '';
-            }
+            showSelectedPreview();
           } else if (message.type === 'preview') {
             renderPreview(message);
           } else if (message.type === 'status') {
             statusEl.textContent = message.message || '';
           } else if (message.type === 'reset') {
             // The window is reused between popups — start clean, search only on typing.
+            setNormal(false);
+            showHelp(false);
             queryEl.value = '';
             items = [];
             defsOnly = false;
@@ -1151,6 +1574,20 @@
               grepMode = message.grepMode;
             }
             defsOnly = !!message.defsOnly;
+            if ('palette' in message) {
+              palette = message.palette && typeof message.palette === 'object' ? message.palette : null;
+            }
+            if (typeof message.promptNormal === 'boolean') {
+              promptNormal = message.promptNormal;
+            }
+            if (typeof message.vsneo === 'boolean' && message.vsneo !== vsneo) {
+              var showingHint = statusEl.textContent === HINT;
+              vsneo = message.vsneo;
+              HINT = vsneo ? HINT_VSNEO : HINT_SEEKY;
+              if (showingHint) {
+                statusEl.textContent = HINT;
+              }
+            }
             if (typeof message.theme === 'string') {
               applyTheme(message.theme);
             }
