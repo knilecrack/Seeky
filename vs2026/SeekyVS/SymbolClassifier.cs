@@ -217,7 +217,7 @@ internal static partial class SymbolClassifier
             return false;
         }
 
-        string name = line[nameStart..end];
+        string name = line.Substring(nameStart, end - nameStart);
         if (Array.IndexOf(NonSymbolNames, name) >= 0)
         {
             return false;
@@ -312,51 +312,102 @@ internal static partial class SymbolClassifier
         }
 
         int separator = path.LastIndexOfAny(['/', '\\']);
-        return dot < separator ? string.Empty : path[dot..].ToLowerInvariant();
+        return dot < separator ? string.Empty : path.Substring(dot).ToLowerInvariant();
     }
 
     // ------------------------------------------------------------------ patterns
+    //
+    // VSNeo compiles this file for .NET Framework 4.7.2, which has no [GeneratedRegex] source
+    // generator: there each pattern is a lazily built compiled Regex instead (NETFRAMEWORK).
+    // Ranges and ^ indices are spelled out with Substring/Count for the same reason.
 
-    [GeneratedRegex(
-        @"^\s*(?:\[[^\]]*\]\s*)*(?:(?:public|private|protected|internal|static|sealed|abstract|partial|readonly|ref|file|new|unsafe)\s+)*(?<kind>record\s+struct|record\s+class|class|interface|struct|record|enum|delegate|namespace)\s+(?<name>[A-Za-z_]\w*)",
-        RegexOptions.ExplicitCapture)]
+    private const string CFamilyTypePattern =
+        @"^\s*(?:\[[^\]]*\]\s*)*(?:(?:public|private|protected|internal|static|sealed|abstract|partial|readonly|ref|file|new|unsafe)\s+)*(?<kind>record\s+struct|record\s+class|class|interface|struct|record|enum|delegate|namespace)\s+(?<name>[A-Za-z_]\w*)";
+#if NETFRAMEWORK
+    private static Regex? _cFamilyType;
+    private static Regex CFamilyTypeRegex() => _cFamilyType ??= new Regex(CFamilyTypePattern, RegexOptions.ExplicitCapture | RegexOptions.Compiled);
+#else
+    [GeneratedRegex(CFamilyTypePattern, RegexOptions.ExplicitCapture)]
     private static partial Regex CFamilyTypeRegex();
+#endif
 
-    [GeneratedRegex(
-        @"^\s*(?:\[[^\]]*\]\s*)*(?:(?:public|private|protected|internal|static|async|virtual|override|abstract|sealed|partial|extern|unsafe|new|readonly|const|required|volatile|event|file|explicit|implicit|operator)\s+)+",
-        RegexOptions.ExplicitCapture)]
+    private const string CFamilyMemberPattern =
+        @"^\s*(?:\[[^\]]*\]\s*)*(?:(?:public|private|protected|internal|static|async|virtual|override|abstract|sealed|partial|extern|unsafe|new|readonly|const|required|volatile|event|file|explicit|implicit|operator)\s+)+";
+#if NETFRAMEWORK
+    private static Regex? _cFamilyMember;
+    private static Regex CFamilyMemberRegex() => _cFamilyMember ??= new Regex(CFamilyMemberPattern, RegexOptions.ExplicitCapture | RegexOptions.Compiled);
+#else
+    [GeneratedRegex(CFamilyMemberPattern, RegexOptions.ExplicitCapture)]
     private static partial Regex CFamilyMemberRegex();
+#endif
 
-    [GeneratedRegex(
-        @"^\s*(?:async\s+)?(?<kind>def|class)\s+(?<name>[A-Za-z_]\w*)",
-        RegexOptions.ExplicitCapture)]
+    private const string PythonPattern =
+        @"^\s*(?:async\s+)?(?<kind>def|class)\s+(?<name>[A-Za-z_]\w*)";
+#if NETFRAMEWORK
+    private static Regex? _python;
+    private static Regex PythonRegex() => _python ??= new Regex(PythonPattern, RegexOptions.ExplicitCapture | RegexOptions.Compiled);
+#else
+    [GeneratedRegex(PythonPattern, RegexOptions.ExplicitCapture)]
     private static partial Regex PythonRegex();
+#endif
 
-    [GeneratedRegex(
-        @"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:default\s+|async\s+|unsafe\s+|const\s+|extern\s+(?:""[^""]*""\s+)?)*(?<kind>fn|struct|enum|trait|impl|type|mod|union|macro_rules!)\s+(?<name>[A-Za-z_]\w*)",
-        RegexOptions.ExplicitCapture)]
+    private const string RustPattern =
+        @"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:default\s+|async\s+|unsafe\s+|const\s+|extern\s+(?:""[^""]*""\s+)?)*(?<kind>fn|struct|enum|trait|impl|type|mod|union|macro_rules!)\s+(?<name>[A-Za-z_]\w*)";
+#if NETFRAMEWORK
+    private static Regex? _rust;
+    private static Regex RustRegex() => _rust ??= new Regex(RustPattern, RegexOptions.ExplicitCapture | RegexOptions.Compiled);
+#else
+    [GeneratedRegex(RustPattern, RegexOptions.ExplicitCapture)]
     private static partial Regex RustRegex();
+#endif
 
-    [GeneratedRegex(
-        @"^\s*(?<kind>func|type)\s+(?:\([^)]*\)\s*)?(?<name>[A-Za-z_]\w*)",
-        RegexOptions.ExplicitCapture)]
+    private const string GoPattern =
+        @"^\s*(?<kind>func|type)\s+(?:\([^)]*\)\s*)?(?<name>[A-Za-z_]\w*)";
+#if NETFRAMEWORK
+    private static Regex? _go;
+    private static Regex GoRegex() => _go ??= new Regex(GoPattern, RegexOptions.ExplicitCapture | RegexOptions.Compiled);
+#else
+    [GeneratedRegex(GoPattern, RegexOptions.ExplicitCapture)]
     private static partial Regex GoRegex();
+#endif
 
-    [GeneratedRegex(
-        @"^\s*(?:export\s+)?(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?(?<kind>function\s*\*?|class|interface|type|enum|const|let|var)\s+(?<name>[A-Za-z_$][\w$]*)",
-        RegexOptions.ExplicitCapture)]
+    private const string ScriptPattern =
+        @"^\s*(?:export\s+)?(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?(?<kind>function\s*\*?|class|interface|type|enum|const|let|var)\s+(?<name>[A-Za-z_$][\w$]*)";
+#if NETFRAMEWORK
+    private static Regex? _script;
+    private static Regex ScriptRegex() => _script ??= new Regex(ScriptPattern, RegexOptions.ExplicitCapture | RegexOptions.Compiled);
+#else
+    [GeneratedRegex(ScriptPattern, RegexOptions.ExplicitCapture)]
     private static partial Regex ScriptRegex();
+#endif
 
-    [GeneratedRegex(
-        @"^\s{2,}(?:(?:public|private|protected|static|readonly|async|get|set|override)\s+)*(?<name>[A-Za-z_$][\w$]*)\s*(?:(?<paren>\()|:\s*\S)",
-        RegexOptions.ExplicitCapture)]
+    private const string ScriptMemberPattern =
+        @"^\s{2,}(?:(?:public|private|protected|static|readonly|async|get|set|override)\s+)*(?<name>[A-Za-z_$][\w$]*)\s*(?:(?<paren>\()|:\s*\S)";
+#if NETFRAMEWORK
+    private static Regex? _scriptMember;
+    private static Regex ScriptMemberRegex() => _scriptMember ??= new Regex(ScriptMemberPattern, RegexOptions.ExplicitCapture | RegexOptions.Compiled);
+#else
+    [GeneratedRegex(ScriptMemberPattern, RegexOptions.ExplicitCapture)]
     private static partial Regex ScriptMemberRegex();
+#endif
 
-    [GeneratedRegex(
-        @"^\s*(?:(?:Public|Private|Protected|Friend|Shared|Overrides|Overridable|MustOverride|NotOverridable|Partial|ReadOnly|Default)\s+)*(?<kind>Sub|Function|Property|Class|Module|Structure|Enum|Interface|Delegate)\s+(?<name>[A-Za-z_]\w*)",
-        RegexOptions.ExplicitCapture | RegexOptions.IgnoreCase)]
+    private const string VisualBasicPattern =
+        @"^\s*(?:(?:Public|Private|Protected|Friend|Shared|Overrides|Overridable|MustOverride|NotOverridable|Partial|ReadOnly|Default)\s+)*(?<kind>Sub|Function|Property|Class|Module|Structure|Enum|Interface|Delegate)\s+(?<name>[A-Za-z_]\w*)";
+#if NETFRAMEWORK
+    private static Regex? _visualBasic;
+    private static Regex VisualBasicRegex() => _visualBasic ??= new Regex(VisualBasicPattern, RegexOptions.ExplicitCapture | RegexOptions.IgnoreCase | RegexOptions.Compiled);
+#else
+    [GeneratedRegex(VisualBasicPattern, RegexOptions.ExplicitCapture | RegexOptions.IgnoreCase)]
     private static partial Regex VisualBasicRegex();
+#endif
 
-    [GeneratedRegex(@"\s+")]
+    private const string WhitespacePattern =
+        @"\s+";
+#if NETFRAMEWORK
+    private static Regex? _whitespace;
+    private static Regex WhitespaceRegex() => _whitespace ??= new Regex(WhitespacePattern, RegexOptions.Compiled);
+#else
+    [GeneratedRegex(WhitespacePattern)]
     private static partial Regex WhitespaceRegex();
+#endif
 }

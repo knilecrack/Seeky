@@ -103,7 +103,7 @@ internal static partial class SymbolOutline
 
             while (chain.Count > 0)
             {
-                Entry top = chain[^1];
+                Entry top = chain[chain.Count - 1];
                 if (top.Indent < entry.Indent)
                 {
                     break;
@@ -163,12 +163,19 @@ internal static partial class SymbolOutline
             return false;
         }
 
-        return path[dot..].ToLowerInvariant() is ".cs" or ".java" or ".cpp" or ".cc" or ".cxx"
+        return path.Substring(dot).ToLowerInvariant() is ".cs" or ".java" or ".cpp" or ".cc" or ".cxx"
             or ".c" or ".h" or ".hpp" or ".hxx";
     }
 
-    [GeneratedRegex(
-        @"^\s*(?<type>[A-Za-z_][\w<>\[\],.?]*)\s+(?<name>[A-Za-z_]\w*)\s*\(",
-        RegexOptions.ExplicitCapture)]
+    // VSNeo compiles this file for .NET Framework 4.7.2 (no [GeneratedRegex] there): see
+    // SymbolClassifier's patterns section.
+    private const string RelaxedMemberPattern =
+        @"^\s*(?<type>[A-Za-z_][\w<>\[\],.?]*)\s+(?<name>[A-Za-z_]\w*)\s*\(";
+#if NETFRAMEWORK
+    private static Regex? _relaxedMember;
+    private static Regex RelaxedMemberRegex() => _relaxedMember ??= new Regex(RelaxedMemberPattern, RegexOptions.ExplicitCapture | RegexOptions.Compiled);
+#else
+    [GeneratedRegex(RelaxedMemberPattern, RegexOptions.ExplicitCapture)]
     private static partial Regex RelaxedMemberRegex();
+#endif
 }
