@@ -227,7 +227,7 @@ same — these failures are all silent or cryptic without instrumentation.
 - `SeekyToolWindow.cs` / `SeekyToolWindowContent.cs` / `.xaml` — **dead-end Remote UI experiment,
   kept for documentation only** (see above).
 - `WebUI/index.html` — **Telescope-style search UI** (plain JS/CSS, no build step): prompt row
-  (`Find Files> ` / `Live Grep (fuzzy)> ` / `Current File (fuzzy)> ` / `Symbols> ` /
+  (`Find Files (fuzzy)> ` / `Live Grep (fuzzy)> ` / `Current File (fuzzy)> ` / `Symbols> ` /
   `Git Modified> ` / `Files & Folders> `) at the bottom,
   results left + preview pane right (~50/50), status line above the prompt. Modes cycle with
   **Tab** or **Ctrl+G**: files → grep → current file → symbols → git → files & folders. Current
@@ -239,7 +239,9 @@ same — these failures are all silent or cryptic without instrumentation.
   keystroke; its rows render `kind  Name  path:line` with the fuzzy highlight on the **name**
   (`nameRanges`), not the source line. Other keys: **Ctrl+R** cycles grep sub-mode
   plain → regex → **fuzzy** (default — fff's signature mode) → **any** (`TODO|FIXME *.cs`:
-  lines matching any `|`-separated literal, via `fff_multi_grep`), **Ctrl+D** toggles a
+  lines matching any `|`-separated literal, via `fff_multi_grep`); in Find Files it cycles
+  **fuzzy** (default, `fff_search`) → **plain** (the query as a literal piece of the path, smart
+  case) → **glob** (`fff_glob`, `**/*Test*.cs`), saved per solution like the grep sub-mode. **Ctrl+D** toggles a
   definitions-only filter on grep results (`SymbolClassifier`-tagged, shown with a
   `def` badge), **Ctrl+F** on a Find Files / Files & Folders / Git Modified row switches to Live
   Grep scoped to it (`folder/ ` or `**/path/file.cs ` — v0.10.1 ignores a bare file path as a grep

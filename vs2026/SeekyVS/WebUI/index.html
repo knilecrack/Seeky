@@ -430,7 +430,8 @@
       }
 
     Message contract:
-      page -> host: { type: 'search', query, mode, grepMode }   mode: 'files' | 'grep' | 'buffer' | 'git'
+      page -> host: { type: 'search', query, mode, grepMode, fileMode }
+                                                                mode: 'files' | 'grep' | 'buffer' | 'git'
                                                                       | 'mixed' | 'symbols';
                                                                 mixed = Files & Folders (fff
                                                                 search_mixed), folder rows carry
@@ -442,6 +443,10 @@
                                                                   | 'any' ('|'-separated literals,
                                                                   fff multi_grep; constraint tokens
                                                                   like *.cs split off by the host)
+                                                                fileMode: 'fuzzy' | 'plain' | 'glob'
+                                                                  (Find Files: fff search, path
+                                                                  substring with smart case, or
+                                                                  fff glob)
                                                                 symbols and files also search on
                                                                 an empty query (the workspace's
                                                                 symbols / recent files)
@@ -461,7 +466,7 @@
                     { type: 'resizeWindow', step }              +1 grow / -1 shrink / 0 default;
                                                                 the host owns the HWND and the
                                                                 screen metrics, so it does the math
-                    { type: 'stateChanged', fontSize, grepMode, defsOnly, theme }
+                    { type: 'stateChanged', fontSize, grepMode, fileMode, defsOnly, theme }
                                                                 sent whenever the user changes one
                                                                 of them; the host holds it in
                                                                 memory and writes it on close
@@ -495,7 +500,7 @@
                     { type: 'history', queries }           past queries (fff track_query
                                                            history), most recent first;
                                                            ↑ in an empty prompt cycles them
-                    { type: 'setState', fontFamily, fontSize, grepMode, defsOnly, theme,
+                    { type: 'setState', fontFamily, fontSize, grepMode, fileMode, defsOnly, theme,
                               palette?, promptNormal?, vsneo? }
                                                            palette, promptNormal and vsneo are
                                                            VSNeo's: vsneo=true turns on the keys
@@ -551,12 +556,13 @@
       // VSNeo (setState vsneo=true) handles 'open' with a split and 'quickfix'; standalone
       // SeekyVS does not, so there Ctrl+V stays paste and the hint leaves those keys out.
       var vsneo = false;
-      var HINT_SEEKY = 'F1 or Ctrl+/ all keys · Tab next mode · Enter open · Ctrl+R grep mode · Ctrl+D defs · Esc close';
+      var HINT_SEEKY = 'F1 or Ctrl+/ all keys · Tab next mode · Enter open · Ctrl+R match mode · Ctrl+D defs · Esc close';
       var HINT_VSNEO = 'Ctrl+/ all keys and pickers · Tab next mode · Enter open · Ctrl+V/X split · Ctrl+Q quickfix · Esc close';
       var HINT = HINT_SEEKY;
 
       var mode = 'files'; // 'files' | 'grep' | 'buffer' | 'git' | 'mixed' | 'symbols' | 'path'
       var grepMode = 'fuzzy'; // 'plain' | 'regex' | 'fuzzy' | 'any' (fuzzy is fff's signature mode)
+      var fileMode = 'fuzzy'; // Find Files: 'fuzzy' | 'plain' | 'glob' (Ctrl+R there)
       var defsOnly = false;   // Ctrl+D: grep rows filtered to definitions (resets per search)
       var history = [];       // past queries from fff (most recent first)
       var historyIndex = -1;  // -1 = not navigating history
@@ -635,7 +641,7 @@
       // Report what the user changed so the host can persist it. The host keeps this in memory
       // and writes it once, on close — sending per keystroke is fine, autorepeat included.
       function sendState() {
-        send({ type: 'stateChanged', fontSize: fontSize, grepMode: grepMode, defsOnly: defsOnly, theme: theme });
+        send({ type: 'stateChanged', fontSize: fontSize, grepMode: grepMode, fileMode: fileMode, defsOnly: defsOnly, theme: theme });
       }
 
       function adjustFontSize(delta) {
@@ -693,7 +699,7 @@
           statusEl.textContent = HINT;
           return;
         }
-        send({ type: 'search', query: query, mode: mode, grepMode: grepMode });
+        send({ type: 'search', query: query, mode: mode, grepMode: grepMode, fileMode: fileMode });
       }
 
       // Current File is Live Grep scoped to one document: same rows, sub-modes and defs filter.
@@ -712,7 +718,7 @@
           return;
         }
         modeLabelEl.textContent = mode === 'files'
-          ? 'Find Files'
+          ? `Find Files (${fileMode})`
           : mode === 'git'
             ? 'Git Modified'
             : mode === 'mixed'
@@ -754,9 +760,18 @@
         }
       }
 
-      function toggleGrepMode() {
+      // Ctrl+R: how the query matches. Grep and Current File cycle the grep sub-modes, Find Files
+      // its own (fuzzy, plain, glob); the other modes have only one.
+      function toggleMatchMode() {
+        if (mode === 'files') {
+          fileMode = fileMode === 'fuzzy' ? 'plain' : fileMode === 'plain' ? 'glob' : 'fuzzy';
+          updatePromptLabel();
+          sendState();
+          sendSearch();
+          return;
+        }
         if (!isGrepLike()) {
-          return; // grep sub-modes only make sense in Live Grep / Current File
+          return;
         }
         grepMode = grepMode === 'plain' ? 'regex'
           : grepMode === 'regex' ? 'fuzzy'
@@ -1160,14 +1175,15 @@
         ]],
         ['Modes and filters', [
           ['Tab  Ctrl+G', 'next mode: Files, Grep, Current File, Symbols, Git, Files & Folders'],
-          ['Ctrl+R', 'grep sub-mode: plain, regex, fuzzy, any'],
+          ['Ctrl+R', 'match mode. Grep: plain, regex, fuzzy, any. Files: fuzzy, plain, glob'],
           ['Ctrl+D', 'grep: definitions only'],
           ['Ctrl+F', 'grep inside the selected file or folder'],
         ]],
         ['In the query', [
-          ['Foo.cs:42:9', 'Files: open at line 42, column 9'],
+          ['Foo.cs:42:9', 'Files (fuzzy): open at line 42, column 9'],
           ['*.cs needle', 'Grep: only in .cs files (folder/ works too)'],
           ['a|b', 'Grep in any mode: either literal'],
+          ['**/*Test*.cs', 'Files in glob mode: one path pattern'],
           ['(empty)', 'Files: your recent files'],
         ]],
         ['Prompt normal mode', [
@@ -1369,7 +1385,7 @@
           toggleMode();
         } else if (key === 'r' && e.ctrlKey) {
           e.preventDefault();
-          toggleGrepMode();
+          toggleMatchMode();
         } else if (e.ctrlKey && e.shiftKey && (key === '+' || key === '=')) {
           // Window size lives on the host (it owns the HWND and the screen metrics), so these
           // only send the intent. They MUST be tested before the plain-Ctrl font branches below:
@@ -1573,6 +1589,10 @@
             if (message.grepMode === 'plain' || message.grepMode === 'regex' || message.grepMode === 'fuzzy' || message.grepMode === 'any') {
               grepMode = message.grepMode;
             }
+            var previousFileMode = fileMode;
+            if (message.fileMode === 'fuzzy' || message.fileMode === 'plain' || message.fileMode === 'glob') {
+              fileMode = message.fileMode;
+            }
             defsOnly = !!message.defsOnly;
             if ('palette' in message) {
               palette = message.palette && typeof message.palette === 'object' ? message.palette : null;
@@ -1594,6 +1614,11 @@
             // The prompt label carries the grep sub-mode, so it has to be redrawn here — 'setMode'
             // follows this message and would otherwise be the only thing that refreshes it.
             updatePromptLabel();
+            // A search already sent (or waiting on the host's workspace) carries the old mode; the
+            // results must match the label.
+            if (mode === 'files' && fileMode !== previousFileMode && queryEl.value.length > 0) {
+              sendSearch();
+            }
           } else if (message.type === 'setQuery') {
             queryEl.value = message.query || '';
             // Selected, not just filled: the term came from the editor, so the first keystroke
