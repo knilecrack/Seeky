@@ -1589,6 +1589,7 @@
             if (message.grepMode === 'plain' || message.grepMode === 'regex' || message.grepMode === 'fuzzy' || message.grepMode === 'any') {
               grepMode = message.grepMode;
             }
+            var previousFileMode = fileMode;
             if (message.fileMode === 'fuzzy' || message.fileMode === 'plain' || message.fileMode === 'glob') {
               fileMode = message.fileMode;
             }
@@ -1613,6 +1614,11 @@
             // The prompt label carries the grep sub-mode, so it has to be redrawn here — 'setMode'
             // follows this message and would otherwise be the only thing that refreshes it.
             updatePromptLabel();
+            // A search already sent (or waiting on the host's workspace) carries the old mode; the
+            // results must match the label.
+            if (mode === 'files' && fileMode !== previousFileMode && queryEl.value.length > 0) {
+              sendSearch();
+            }
           } else if (message.type === 'setQuery') {
             queryEl.value = message.query || '';
             // Selected, not just filled: the term came from the editor, so the first keystroke

@@ -230,7 +230,7 @@ internal sealed partial class FffNativeClient : IDisposable
                     ThrowIfNotStartedCore();
                     if (query.Length > 0 && match == FileMatch.Plain)
                     {
-                        return new FileSearch(FindPlainCore(query, currentFile, maxResults), null);
+                        return new FileSearch(FindPlainCore(query, currentFile, maxResults, cancellationToken), null);
                     }
 
                     if (query.Length > 0 && match == FileMatch.Glob)
@@ -481,13 +481,25 @@ internal sealed partial class FffNativeClient : IDisposable
     /// rather than the result count; a few ms per ten thousand files. <paramref name="currentFile"/>
     /// ranks last, as fff_search does with it: the alternate file is the likelier pick.
     /// </summary>
-    private List<FileItem> FindPlainCore(string query, string? currentFile, int maxResults)
+    private List<FileItem> FindPlainCore(
+        string query, string? currentFile, int maxResults, CancellationToken cancellationToken)
     {
         string needle = query.Replace('\\', '/');
         StringComparison comparison = HasUpper(needle) ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+        int tested = 0;
         List<FileItem> all = SearchFilesCore(
             "*", null, PlainPoolSize, useGlob: true, int.MaxValue, gitModifiedOnly: false,
-            out _, out _, path => path.Replace('\\', '/').IndexOf(needle, comparison) >= 0);
+            out _, out _, path =>
+            {
+                // This runs under the gate: a superseded search must give it up, not finish the scan.
+                if ((++tested & 0xFFF) == 0)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
+
+                return path.Replace('\\', '/').IndexOf(needle, comparison) >= 0;
+            });
+        cancellationToken.ThrowIfCancellationRequested();
 
         // The open file last, then file-name hits before directory-only hits, then frecency,
         // then the shorter path.
