@@ -381,6 +381,33 @@
     }
     /* Readout marker: this line is the machine talking, not content. */
     #status::before { content: '▸ '; color: var(--accent); }
+    /* F1 / Ctrl+/ key help: a sheet over the results and preview, any key dismisses it. */
+    #help {
+      position: fixed;
+      inset: 12px 12px auto 12px;
+      max-height: calc(100% - 84px);
+      overflow: auto;
+      padding: 12px 16px;
+      background: var(--bg-alt);
+      border: 1px solid var(--accent);
+      color: var(--fg);
+      z-index: 10;
+      column-width: 300px;
+      column-gap: 28px;
+    }
+    #help[hidden] { display: none; }
+    #help h3 {
+      margin: 0 0 6px;
+      color: var(--accent);
+      font-size: 1em;
+      letter-spacing: .05em;
+      break-after: avoid;
+    }
+    #help section { break-inside: avoid; margin-bottom: 14px; }
+    #help .row { display: flex; gap: 12px; line-height: 1.6; }
+    #help .keys { flex: 0 0 11em; color: var(--amber); }
+    #help .what { color: var(--fg); }
+    #help .foot { column-span: all; color: var(--fg-dim); margin-top: 4px; }
   </style>
 </head>
 <body>
@@ -501,6 +528,7 @@
       <pre id="preview-content"></pre>
     </div>
   </div>
+  <div id="help" hidden></div>
   <div id="status">starting…</div>
   <div id="prompt">
     <span id="mode-label">Find Files</span>
@@ -523,8 +551,8 @@
       // VSNeo (setState vsneo=true) handles 'open' with a split and 'quickfix'; standalone
       // SeekyVS does not, so there Ctrl+V stays paste and the hint leaves those keys out.
       var vsneo = false;
-      var HINT_SEEKY = 'Tab cycles Files/Grep/Current File/Symbols/Git/Files+Folders · Ctrl+N/P move · Ctrl+R grep mode · Ctrl+D defs · Ctrl+F grep in selected · Ctrl+T theme · Ctrl+±/0 font · Ctrl+Shift+±/0 window';
-      var HINT_VSNEO = 'Tab cycles Files/Grep/Current File/Symbols/Git/Files+Folders · Ctrl+N/P move · Ctrl+V/X split · Ctrl+Q quickfix · Ctrl+R grep mode · Ctrl+D defs · Ctrl+F grep in selected · Ctrl+T theme · Ctrl+±/0 font · Ctrl+Shift+±/0 window';
+      var HINT_SEEKY = 'F1 help · Tab cycles Files/Grep/Current File/Symbols/Git/Files+Folders · Ctrl+N/P move · Ctrl+R grep mode · Ctrl+D defs · Ctrl+F grep in selected · Ctrl+T theme · Ctrl+±/0 font · Ctrl+Shift+±/0 window';
+      var HINT_VSNEO = 'F1 help · Tab cycles Files/Grep/Current File/Symbols/Git/Files+Folders · Ctrl+N/P move · Ctrl+V/X split · Ctrl+Q quickfix · Ctrl+R grep mode · Ctrl+D defs · Ctrl+F grep in selected · Ctrl+T theme · Ctrl+±/0 font · Ctrl+Shift+±/0 window';
       var HINT = HINT_SEEKY;
 
       var mode = 'files'; // 'files' | 'grep' | 'buffer' | 'git' | 'mixed' | 'symbols' | 'path'
@@ -1114,6 +1142,96 @@
         send({ type: 'quickfix', title: modeLabelEl.textContent + ' > ' + queryEl.value, items: rows });
       }
 
+      // ---------------------------------------------------------------- key help (F1, Ctrl+/)
+
+      // [keys, what it does, when it applies]. 'vsneo' rows show only under VSNeo (setState
+      // vsneo=true), 'normal' rows only with prompt normal mode on: the sheet lists what this
+      // host really does. Keep it in step with onPromptKeyDown and onNormalKeyDown.
+      var HELP = [
+        ['Moving', [
+          ['↑ ↓  Ctrl+P/N  Ctrl+K/J', 'previous / next result'],
+          ['Enter', 'open the selected result'],
+          ['↑ (empty prompt)', 'walk back through past queries'],
+          ['Esc', 'close the picker'],
+        ]],
+        ['Searching', [
+          ['Tab  Ctrl+G', 'next picker: Files, Grep, Current File, Symbols, Git, Files+Folders'],
+          ['Ctrl+R', 'grep mode: fuzzy, plain, regex, any'],
+          ['Ctrl+D', 'grep: definitions only'],
+          ['Ctrl+F', 'Live Grep inside the selected file or folder'],
+          ['file:12:5', 'Find Files: open at line 12, column 5'],
+        ]],
+        ['Opening (VSNeo)', [
+          ['Ctrl+V', 'open in a vertical split', 'vsneo'],
+          ['Ctrl+X', 'open in a horizontal split', 'vsneo'],
+          ['Ctrl+Q', 'send every shown result to the quickfix list (then :cnext / :cprev)', 'vsneo'],
+        ]],
+        ['Prompt normal mode', [
+          ['Esc', 'leave the prompt for normal mode; Esc again closes', 'normal'],
+          ['j / k', 'next / previous result', 'normal'],
+          ['gg / G', 'top / bottom result', 'normal'],
+          ['i  a  I  A', 'back to typing', 'normal'],
+          ['?', 'this help', 'normal'],
+        ]],
+        ['Look', [
+          ['Ctrl+T', 'next colour theme (saved on close)'],
+          ['Ctrl+ +/-/0', 'font size bigger / smaller / reset'],
+          ['Ctrl+Shift+ +/-/0', 'window bigger / smaller / reset'],
+        ]],
+      ];
+
+      var helpEl = document.getElementById('help');
+
+      function helpOpen() {
+        return !helpEl.hidden;
+      }
+
+      function renderHelp() {
+        helpEl.textContent = '';
+        HELP.forEach(function (group) {
+          var rows = group[1].filter(function (row) {
+            return row[2] === undefined || (row[2] === 'vsneo' && vsneo) || (row[2] === 'normal' && promptNormal);
+          });
+          if (rows.length === 0) {
+            return;
+          }
+          var section = document.createElement('section');
+          var title = document.createElement('h3');
+          title.textContent = group[0];
+          section.appendChild(title);
+          rows.forEach(function (row) {
+            var line = document.createElement('div');
+            line.className = 'row';
+            var keys = document.createElement('span');
+            keys.className = 'keys';
+            keys.textContent = row[0];
+            var what = document.createElement('span');
+            what.className = 'what';
+            what.textContent = row[1];
+            line.appendChild(keys);
+            line.appendChild(what);
+            section.appendChild(line);
+          });
+          helpEl.appendChild(section);
+        });
+        var foot = document.createElement('div');
+        foot.className = 'foot';
+        foot.textContent = 'Any key closes this help.';
+        helpEl.appendChild(foot);
+      }
+
+      function showHelp(on) {
+        if (on) {
+          renderHelp(); // vsneo / promptNormal can change between shows
+        }
+        helpEl.hidden = !on;
+      }
+
+      function isHelpKey(e) {
+        return e.key === 'F1' || (e.ctrlKey && (e.key === '/' || e.code === 'Slash')) ||
+          (inNormal && e.key === '?');
+      }
+
       // ---------------------------------------------------------------- prompt normal mode
 
       function setNormal(on) {
@@ -1122,7 +1240,7 @@
         promptEl.classList.toggle('normal', on);
         queryEl.readOnly = on;
         statusEl.textContent = on
-          ? 'NORMAL — j/k move · gg/G ends · Enter opens · i/a back to the prompt · Esc closes'
+          ? 'NORMAL — j/k move · gg/G ends · Enter opens · i/a back to the prompt · ? help · Esc closes'
           : HINT;
       }
 
@@ -1314,6 +1432,18 @@
       // with focus elsewhere (the preview pane after a text selection) is sent to the prompt -
       // moving focus during keydown redirects the character that follows.
       document.addEventListener('keydown', function (e) {
+        // The help sheet: its own keys toggle it, Escape only closes it, and any other key
+        // closes it and then does what it always does.
+        if (isHelpKey(e) || (helpOpen() && e.key === 'Escape')) {
+          e.preventDefault();
+          e.stopPropagation();
+          showHelp(!helpOpen() && e.key !== 'Escape');
+          queryEl.focus();
+          return;
+        }
+        if (helpOpen() && !['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) {
+          showHelp(false);
+        }
         if (e.key === 'Escape') {
           e.preventDefault();
           if (promptNormal && !inNormal) {
@@ -1386,6 +1516,7 @@
           } else if (message.type === 'reset') {
             // The window is reused between popups — start clean, search only on typing.
             setNormal(false);
+            showHelp(false);
             queryEl.value = '';
             items = [];
             defsOnly = false;
