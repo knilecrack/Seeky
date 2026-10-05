@@ -556,12 +556,13 @@ internal static class SeekyModalWindowManager
                         string query = GetString(doc.RootElement, "query") ?? string.Empty;
                         string mode = GetString(doc.RootElement, "mode") ?? "files";
                         string grepMode = GetString(doc.RootElement, "grepMode") ?? "plain";
-                        SeekyLog.Info($"WebMessageReceived: search mode={mode} grepMode={grepMode} query='{query}'");
+                        string fileMode = GetString(doc.RootElement, "fileMode") ?? "fuzzy";
+                        SeekyLog.Info($"WebMessageReceived: search mode={mode} grepMode={grepMode} fileMode={fileMode} query='{query}'");
 
                         // On the threadpool, not the pump: the search path makes extensibility
                         // RPC calls (Editor/Workspaces), and the SDK's sync-over-async lazy
                         // service init deadlocks the pump thread.
-                        Task.Run(() => HandleSearchAsync(query, mode, grepMode)).Forget();
+                        Task.Run(() => HandleSearchAsync(query, mode, grepMode, fileMode)).Forget();
                         break;
                     }
 
@@ -625,7 +626,8 @@ internal static class SeekyModalWindowManager
                             GetInt(doc.RootElement, "fontSize"),
                             GetString(doc.RootElement, "grepMode"),
                             defsOnly,
-                            GetString(doc.RootElement, "theme"));
+                            GetString(doc.RootElement, "theme"),
+                            GetString(doc.RootElement, "fileMode"));
                         if (popupState.Theme != previousTheme)
                         {
                             ApplyFrameColor(); // Ctrl+T: the page already switched itself
@@ -891,6 +893,7 @@ internal static class SeekyModalWindowManager
         fontFamily = ResolveFontFamily(),
         fontSize = popupState.FontSize,
         grepMode = popupState.GrepMode,
+        fileMode = popupState.FileMode,
         defsOnly = popupState.DefsOnly,
         theme = popupState.Theme,
     });
@@ -1213,7 +1216,7 @@ internal static class SeekyModalWindowManager
         }
     }
 
-    private static async Task HandleSearchAsync(string query, string mode, string grepMode)
+    private static async Task HandleSearchAsync(string query, string mode, string grepMode, string fileMode)
     {
         int generation = Interlocked.Increment(ref searchGeneration);
         lastSearchQuery = query;
@@ -1462,8 +1465,14 @@ internal static class SeekyModalWindowManager
                 }
                 else
                 {
+                    FffNativeClient.FileMatch match = fileMode switch
+                    {
+                        "plain" => FffNativeClient.FileMatch.Plain,
+                        "glob" => FffNativeClient.FileMatch.Glob,
+                        _ => FffNativeClient.FileMatch.Fuzzy,
+                    };
                     FffNativeClient.FileSearch search =
-                        await FffClient.FindFilesAsync(query, currentFile, maxResults, cancellationToken);
+                        await FffClient.FindFilesAsync(query, match, currentFile, maxResults, cancellationToken);
 
                     // "Foo.cs:42:9": fff strips the location off the fuzzy text and hands it back, so
                     // every row carries it — the preview centers on it and Enter opens there.
