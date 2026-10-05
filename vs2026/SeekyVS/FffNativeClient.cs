@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -55,6 +56,12 @@ internal sealed partial class FffNativeClient : IDisposable
     /// </summary>
     private const uint GitModifiedPoolSize = 20_000;
 
+    /// <summary>
+    /// The file list plain matching filters: fff_glob <c>*</c> asked for this many. A ceiling
+    /// well past any real solution, since a file past it could never be found.
+    /// </summary>
+    private const uint PlainPoolSize = 1_000_000;
+
     private static readonly System.Threading.Lock ResolverLock = new();
     private static bool resolverInstalled;
 
@@ -103,6 +110,26 @@ internal sealed partial class FffNativeClient : IDisposable
         /// fff_multi_grep (SIMD Aho-Corasick). See <see cref="SplitMultiGrepQuery"/>.
         /// </summary>
         Any = 3,
+    }
+
+    /// <summary>
+    /// How Find Files matches the query (Ctrl+R in the picker). Only <see cref="Fuzzy"/> is an fff
+    /// search mode; the other two run over fff's file list.
+    /// </summary>
+    internal enum FileMatch : byte
+    {
+        /// <summary>fff_search: typo-tolerant, frecency-ranked, parses a <c>:line[:col]</c> suffix.</summary>
+        Fuzzy = 0,
+
+        /// <summary>
+        /// The query as a literal piece of the relative path, smart case (any capital makes it
+        /// case-sensitive); <c>/</c> and <c>\</c> match each other. Paths whose file name holds
+        /// it rank first, then by frecency.
+        /// </summary>
+        Plain = 1,
+
+        /// <summary>fff_glob over relative paths, the query passed as is (<c>**/*.cs</c>).</summary>
+        Glob = 2,
     }
 
     /// <summary>A fuzzy file-search result.</summary>
@@ -180,7 +207,15 @@ internal sealed partial class FffNativeClient : IDisposable
     /// <summary>Fuzzy file search; returns workspace-relative paths with frecency scores.
     /// <paramref name="currentFile"/> deprioritizes the currently open file (fff current_file).
     /// A <c>:line[:col]</c> suffix on the query comes back as <see cref="FileSearch.Location"/>.</summary>
-    public Task<FileSearch> FindFilesAsync(string query, string? currentFile, int maxResults, CancellationToken cancellationToken)
+    public Task<FileSearch> FindFilesAsync(string query, string? currentFile, int maxResults, CancellationToken cancellationToken) =>
+        FindFilesAsync(query, FileMatch.Fuzzy, currentFile, maxResults, cancellationToken);
+
+    /// <summary>
+    /// File search in the given <paramref name="match"/> mode. An empty query is always fuzzy
+    /// (fff's frecency listing); only fuzzy parses a <c>:line[:col]</c> suffix.
+    /// </summary>
+    public Task<FileSearch> FindFilesAsync(
+        string query, FileMatch match, string? currentFile, int maxResults, CancellationToken cancellationToken)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxResults);
         ThrowIfDisposed();
@@ -193,6 +228,19 @@ internal sealed partial class FffNativeClient : IDisposable
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     ThrowIfNotStartedCore();
+                    if (query.Length > 0 && match == FileMatch.Plain)
+                    {
+                        return new FileSearch(FindPlainCore(query, currentFile, maxResults, cancellationToken), null);
+                    }
+
+                    if (query.Length > 0 && match == FileMatch.Glob)
+                    {
+                        List<FileItem> globbed = SearchFilesCore(
+                            query, currentFile, (uint)maxResults, useGlob: true, maxResults,
+                            gitModifiedOnly: false, out _, out _);
+                        return new FileSearch(globbed, null);
+                    }
+
                     List<FileItem> items = SearchFilesCore(
                         query, currentFile, (uint)maxResults, useGlob: false, maxResults,
                         gitModifiedOnly: false, out _, out QueryLocation? location);
@@ -427,6 +475,64 @@ internal sealed partial class FffNativeClient : IDisposable
             cancellationToken);
     }
 
+    /// <summary>
+    /// <see cref="FileMatch.Plain"/>: every indexed path, kept when it contains the query. The
+    /// names are marshalled for the test, so this costs the workspace's file count per search
+    /// rather than the result count; a few ms per ten thousand files. <paramref name="currentFile"/>
+    /// ranks last, as fff_search does with it: the alternate file is the likelier pick.
+    /// </summary>
+    private List<FileItem> FindPlainCore(
+        string query, string? currentFile, int maxResults, CancellationToken cancellationToken)
+    {
+        string needle = query.Replace('\\', '/');
+        StringComparison comparison = HasUpper(needle) ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+        int tested = 0;
+        List<FileItem> all = SearchFilesCore(
+            "*", null, PlainPoolSize, useGlob: true, int.MaxValue, gitModifiedOnly: false,
+            out _, out _, path =>
+            {
+                // This runs under the gate: a superseded search must give it up, not finish the scan.
+                if ((++tested & 0xFFF) == 0)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
+
+                return path.Replace('\\', '/').IndexOf(needle, comparison) >= 0;
+            });
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // The open file last, then file-name hits before directory-only hits, then frecency,
+        // then the shorter path.
+        string? current = currentFile?.Replace('\\', '/');
+        return all
+            .OrderBy(f => current is not null && string.Equals(f.Path.Replace('\\', '/'), current, StringComparison.OrdinalIgnoreCase))
+            .ThenByDescending(f => FileName(f.Path).IndexOf(needle, comparison) >= 0)
+            .ThenByDescending(f => f.FrecencyScore)
+            .ThenBy(f => f.Path.Length)
+            .ThenBy(f => f.Path, StringComparer.OrdinalIgnoreCase)
+            .Take(maxResults)
+            .ToList();
+
+        static bool HasUpper(string text)
+        {
+            foreach (char c in text)
+            {
+                if (char.IsUpper(c))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        static string FileName(string path)
+        {
+            int slash = Math.Max(path.LastIndexOf('/'), path.LastIndexOf('\\'));
+            return slash < 0 ? path : path.Substring(slash + 1);
+        }
+    }
+
     /// <param name="pageSize">How many ranked files to ask fff for.</param>
     /// <param name="maxItems">How many to keep after filtering.</param>
     /// <param name="gitModifiedOnly">
@@ -438,6 +544,7 @@ internal sealed partial class FffNativeClient : IDisposable
     /// needs to tell "the search found nothing" apart from "nothing it found was modified".
     /// </param>
     /// <param name="location">The <c>:line[:col]</c> fff parsed off the query; null when none.</param>
+    /// <param name="pathFilter">When set, keeps only the paths it accepts.</param>
     private List<FileItem> SearchFilesCore(
         string query,
         string? currentFile,
@@ -446,7 +553,8 @@ internal sealed partial class FffNativeClient : IDisposable
         int maxItems,
         bool gitModifiedOnly,
         out uint rankedCount,
-        out QueryLocation? location)
+        out QueryLocation? location,
+        Func<string, bool>? pathFilter = null)
     {
         IntPtr result = useGlob
             ? CallWithWatchdog("glob", () => Native.fff_glob(handle, query, currentFile, 0, 0, pageSize))
@@ -477,7 +585,7 @@ internal sealed partial class FffNativeClient : IDisposable
                 }
 
                 string? path = PtrToString(Native.fff_file_item_get_relative_path(item));
-                if (path is not null)
+                if (path is not null && (pathFilter is null || pathFilter(path)))
                 {
                     items.Add(new FileItem(
                         path,

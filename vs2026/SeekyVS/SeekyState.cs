@@ -48,6 +48,9 @@ internal sealed record SeekyState
     /// <summary>fff's signature mode, and what Live Grep opens in when nothing is stored.</summary>
     private const string DefaultGrepMode = "fuzzy";
 
+    /// <summary>What Find Files opens in when nothing is stored: fff's fuzzy search.</summary>
+    private const string DefaultFileMode = "fuzzy";
+
     /// <summary>What the popup looks like when nothing is stored — the original CRT palette.</summary>
     private const string DefaultTheme = "phosphor";
 
@@ -58,6 +61,9 @@ internal sealed record SeekyState
 
     /// <summary>"plain", "regex", "fuzzy" or "any" — anything else is rejected on the way in.</summary>
     public string GrepMode { get; init; } = DefaultGrepMode;
+
+    /// <summary>Find Files matching: "fuzzy", "plain" or "glob" (Ctrl+R in Find Files).</summary>
+    public string FileMode { get; init; } = DefaultFileMode;
 
     /// <summary>Whether Live Grep rows are filtered to definitions (Ctrl+D).</summary>
     public bool DefsOnly { get; init; }
@@ -112,6 +118,7 @@ internal sealed record SeekyState
             JsonObject root = ReadJsonObject(path) ?? new JsonObject();
             root["fontSize"] = FontSize;
             root["grepMode"] = GrepMode;
+            root["fileMode"] = FileMode;
             root["defsOnly"] = DefsOnly;
 
             // Removed rather than written as 0 when unset: this file is hand-editable, and
@@ -133,7 +140,7 @@ internal sealed record SeekyState
             }
 
             WriteJsonObject(path, root);
-            SeekyLog.Info($"state: saved to '{path}' (fontSize {FontSize}, grepMode {GrepMode}, defsOnly {DefsOnly})");
+            SeekyLog.Info($"state: saved to '{path}' (fontSize {FontSize}, grepMode {GrepMode}, fileMode {FileMode}, defsOnly {DefsOnly})");
         }
         catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException
             or NotSupportedException or ArgumentException)
@@ -185,10 +192,12 @@ internal sealed record SeekyState
     }
 
     /// <summary>Applies a page-reported state, rejecting anything out of range.</summary>
-    internal SeekyState With(int? fontSize, string? grepMode, bool? defsOnly, string? theme = null) => this with
+    internal SeekyState With(
+        int? fontSize, string? grepMode, bool? defsOnly, string? theme = null, string? fileMode = null) => this with
     {
         FontSize = fontSize is null ? FontSize : ClampFontSize(fontSize.Value),
         GrepMode = NormalizeGrepMode(grepMode) ?? GrepMode,
+        FileMode = NormalizeFileMode(fileMode) ?? FileMode,
         DefsOnly = defsOnly ?? DefsOnly,
         Theme = NormalizeTheme(theme) ?? Theme,
     };
@@ -225,7 +234,8 @@ internal sealed record SeekyState
         }
 
         SeekyState overlaid = state.With(
-            TryInt(json, "fontSize"), TryString(json, "grepMode"), TryBool(json, "defsOnly"));
+            TryInt(json, "fontSize"), TryString(json, "grepMode"), TryBool(json, "defsOnly"),
+            fileMode: TryString(json, "fileMode"));
 
         // Only when the file actually carries a size — WithWindowSize would otherwise read a
         // missing key as 0 and clear a size inherited from the layer below.
@@ -260,6 +270,9 @@ internal sealed record SeekyState
 
     private static string? NormalizeGrepMode(string? mode) =>
         mode is "plain" or "regex" or "fuzzy" or "any" ? mode : null;
+
+    private static string? NormalizeFileMode(string? mode) =>
+        mode is "fuzzy" or "plain" or "glob" ? mode : null;
 
     // Must match the page's THEMES list and its [data-theme] stylesheet blocks.
     private static string? NormalizeTheme(string? theme) =>
