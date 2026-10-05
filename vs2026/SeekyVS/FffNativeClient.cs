@@ -230,7 +230,7 @@ internal sealed partial class FffNativeClient : IDisposable
                     ThrowIfNotStartedCore();
                     if (query.Length > 0 && match == FileMatch.Plain)
                     {
-                        return new FileSearch(FindPlainCore(query, maxResults), null);
+                        return new FileSearch(FindPlainCore(query, currentFile, maxResults), null);
                     }
 
                     if (query.Length > 0 && match == FileMatch.Glob)
@@ -478,9 +478,10 @@ internal sealed partial class FffNativeClient : IDisposable
     /// <summary>
     /// <see cref="FileMatch.Plain"/>: every indexed path, kept when it contains the query. The
     /// names are marshalled for the test, so this costs the workspace's file count per search
-    /// rather than the result count; a few ms per ten thousand files.
+    /// rather than the result count; a few ms per ten thousand files. <paramref name="currentFile"/>
+    /// ranks last, as fff_search does with it: the alternate file is the likelier pick.
     /// </summary>
-    private List<FileItem> FindPlainCore(string query, int maxResults)
+    private List<FileItem> FindPlainCore(string query, string? currentFile, int maxResults)
     {
         string needle = query.Replace('\\', '/');
         StringComparison comparison = HasUpper(needle) ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
@@ -488,9 +489,12 @@ internal sealed partial class FffNativeClient : IDisposable
             "*", null, PlainPoolSize, useGlob: true, int.MaxValue, gitModifiedOnly: false,
             out _, out _, path => path.Replace('\\', '/').IndexOf(needle, comparison) >= 0);
 
-        // File-name hits before directory-only hits, then frecency, then the shorter path.
+        // The open file last, then file-name hits before directory-only hits, then frecency,
+        // then the shorter path.
+        string? current = currentFile?.Replace('\\', '/');
         return all
-            .OrderByDescending(f => FileName(f.Path).IndexOf(needle, comparison) >= 0)
+            .OrderBy(f => current is not null && string.Equals(f.Path.Replace('\\', '/'), current, StringComparison.OrdinalIgnoreCase))
+            .ThenByDescending(f => FileName(f.Path).IndexOf(needle, comparison) >= 0)
             .ThenByDescending(f => f.FrecencyScore)
             .ThenBy(f => f.Path.Length)
             .ThenBy(f => f.Path, StringComparer.OrdinalIgnoreCase)
