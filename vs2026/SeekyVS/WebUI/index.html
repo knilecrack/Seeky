@@ -392,7 +392,7 @@
       border: 1px solid var(--accent);
       color: var(--fg);
       z-index: 10;
-      column-width: 300px;
+      column-width: 30em;
       column-gap: 28px;
     }
     #help[hidden] { display: none; }
@@ -405,7 +405,7 @@
     }
     #help section { break-inside: avoid; margin-bottom: 14px; }
     #help .row { display: flex; gap: 12px; line-height: 1.6; }
-    #help .keys { flex: 0 0 11em; color: var(--amber); }
+    #help .keys { flex: 0 0 15em; color: var(--amber); }
     #help .what { color: var(--fg); }
     #help .foot { column-span: all; color: var(--fg-dim); margin-top: 4px; }
   </style>
@@ -551,8 +551,8 @@
       // VSNeo (setState vsneo=true) handles 'open' with a split and 'quickfix'; standalone
       // SeekyVS does not, so there Ctrl+V stays paste and the hint leaves those keys out.
       var vsneo = false;
-      var HINT_SEEKY = 'F1 help · Tab cycles Files/Grep/Current File/Symbols/Git/Files+Folders · Ctrl+N/P move · Ctrl+R grep mode · Ctrl+D defs · Ctrl+F grep in selected · Ctrl+T theme · Ctrl+±/0 font · Ctrl+Shift+±/0 window';
-      var HINT_VSNEO = 'F1 help · Tab cycles Files/Grep/Current File/Symbols/Git/Files+Folders · Ctrl+N/P move · Ctrl+V/X split · Ctrl+Q quickfix · Ctrl+R grep mode · Ctrl+D defs · Ctrl+F grep in selected · Ctrl+T theme · Ctrl+±/0 font · Ctrl+Shift+±/0 window';
+      var HINT_SEEKY = 'F1 or Ctrl+/ all keys · Tab next mode · Enter open · Ctrl+R grep mode · Ctrl+D defs · Esc close';
+      var HINT_VSNEO = 'Ctrl+/ all keys and pickers · Tab next mode · Enter open · Ctrl+V/X split · Ctrl+Q quickfix · Esc close';
       var HINT = HINT_SEEKY;
 
       var mode = 'files'; // 'files' | 'grep' | 'buffer' | 'git' | 'mixed' | 'symbols' | 'path'
@@ -1145,26 +1145,30 @@
       // ---------------------------------------------------------------- key help (F1, Ctrl+/)
 
       // [keys, what it does, when it applies]. 'vsneo' rows show only under VSNeo (setState
-      // vsneo=true), 'normal' rows only with prompt normal mode on: the sheet lists what this
-      // host really does. Keep it in step with onPromptKeyDown and onNormalKeyDown.
+      // vsneo=true), 'seeky' rows only in standalone SeekyVS, 'normal' rows only with prompt
+      // normal mode on: the sheet lists what this host really does. Keep it in step with
+      // onPromptKeyDown, onNormalKeyDown and the pickers each host serves.
       var HELP = [
-        ['Moving', [
-          ['↑ ↓  Ctrl+P/N  Ctrl+K/J', 'previous / next result'],
+        ['Move and open', [
+          ['↑ ↓  Ctrl+N/P  Ctrl+J/K', 'move through the results'],
           ['Enter', 'open the selected result'],
-          ['↑ (empty prompt)', 'walk back through past queries'],
+          ['Ctrl+V', 'open it in a new vertical tab group (:vsp)', 'vsneo'],
+          ['Ctrl+X', 'open it in a split (:sp)', 'vsneo'],
+          ['Ctrl+Q', 'send the results to the quickfix list and jump to the first; then :cnext / :cprev (or ]q / [q)', 'vsneo'],
+          ['↑ on an empty prompt', 'past queries'],
           ['Esc', 'close the picker'],
         ]],
-        ['Searching', [
-          ['Tab  Ctrl+G', 'next picker: Files, Grep, Current File, Symbols, Git, Files+Folders'],
-          ['Ctrl+R', 'grep mode: fuzzy, plain, regex, any'],
+        ['Modes and filters', [
+          ['Tab  Ctrl+G', 'next mode: Files, Grep, Current File, Symbols, Git, Files & Folders'],
+          ['Ctrl+R', 'grep sub-mode: plain, regex, fuzzy, any'],
           ['Ctrl+D', 'grep: definitions only'],
-          ['Ctrl+F', 'Live Grep inside the selected file or folder'],
-          ['file:12:5', 'Find Files: open at line 12, column 5'],
+          ['Ctrl+F', 'grep inside the selected file or folder'],
         ]],
-        ['Opening (VSNeo)', [
-          ['Ctrl+V', 'open in a vertical split', 'vsneo'],
-          ['Ctrl+X', 'open in a horizontal split', 'vsneo'],
-          ['Ctrl+Q', 'send every shown result to the quickfix list (then :cnext / :cprev)', 'vsneo'],
+        ['In the query', [
+          ['Foo.cs:42:9', 'Files: open at line 42, column 9'],
+          ['*.cs needle', 'Grep: only in .cs files (folder/ works too)'],
+          ['a|b', 'Grep in any mode: either literal'],
+          ['(empty)', 'Files: your recent files'],
         ]],
         ['Prompt normal mode', [
           ['Esc', 'leave the prompt for normal mode; Esc again closes', 'normal'],
@@ -1174,11 +1178,33 @@
           ['?', 'this help', 'normal'],
         ]],
         ['Look', [
-          ['Ctrl+T', 'next colour theme (saved on close)'],
-          ['Ctrl+ +/-/0', 'font size bigger / smaller / reset'],
-          ['Ctrl+Shift+ +/-/0', 'window bigger / smaller / reset'],
+          ['Ctrl+T', 'next colour theme', 'seeky'],
+          ['Ctrl+T', 'next colour theme (nvim = your colorscheme)', 'vsneo'],
+          ['Ctrl+±  Ctrl+0', 'font size / reset'],
+          ['Ctrl+Shift+±  Ctrl+Shift+0', 'window size / reset'],
+          ['F1  Ctrl+/', 'this help (Esc closes it)'],
+        ]],
+        ['Pickers  (:Seeky <name>, or the keys)', [
+          ['files  ␣sf  C-S-A-O', 'find files', 'vsneo'],
+          ['grep  ␣sg  C-S-A-I', 'live grep', 'vsneo'],
+          ['grep word  ␣sw  C-S-A-G', 'grep the word under the cursor', 'vsneo'],
+          ['lines  ␣s/  C-S-A-L', 'search the current file', 'vsneo'],
+          ['symbols  ␣ss  C-S-A-,', 'workspace symbols', 'vsneo'],
+          ['outline  ␣so  C-S-A-B', 'document outline', 'vsneo'],
+          ['git  ␣sm  C-S-A-M', 'git modified files', 'vsneo'],
+          ['mixed', 'files and folders', 'vsneo'],
+          ['resume  ␣sr  C-S-A-R', 'reopen the last picker as you left it', 'vsneo'],
+          ['buffers  ␣sb', 'open documents', 'vsneo'],
+          ['oldfiles  ␣s.', 'recent files, any folder', 'vsneo'],
+          ["marks  ␣s'", 'marks; Enter jumps', 'vsneo'],
+          ['registers  ␣s"', 'registers; Enter pastes', 'vsneo'],
+          ['diagnostics  ␣sd', 'the Error List', 'vsneo'],
+          ['keymaps  ␣sk', 'your mappings; Enter runs one', 'vsneo'],
+          ['command_history  ␣s:', 'past commands; Enter runs one', 'vsneo'],
+          ['search_history  ␣s?', 'past searches; Enter searches', 'vsneo'],
         ]],
       ];
+      var HELP_NOTE_VSNEO = '␣ is <leader>; those keys are only set where your config leaves them free. C-S-A is Ctrl+Shift+Alt and works in insert mode too.';
 
       var helpEl = document.getElementById('help');
 
@@ -1190,7 +1216,8 @@
         helpEl.textContent = '';
         HELP.forEach(function (group) {
           var rows = group[1].filter(function (row) {
-            return row[2] === undefined || (row[2] === 'vsneo' && vsneo) || (row[2] === 'normal' && promptNormal);
+            return row[2] === undefined || (row[2] === 'vsneo' && vsneo) || (row[2] === 'seeky' && !vsneo) ||
+              (row[2] === 'normal' && promptNormal);
           });
           if (rows.length === 0) {
             return;
@@ -1216,7 +1243,7 @@
         });
         var foot = document.createElement('div');
         foot.className = 'foot';
-        foot.textContent = 'Any key closes this help.';
+        foot.textContent = (vsneo ? HELP_NOTE_VSNEO + ' ' : '') + 'Any key closes this help.';
         helpEl.appendChild(foot);
       }
 
