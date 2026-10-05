@@ -569,7 +569,11 @@ internal sealed partial class FffNativeClient : IDisposable
             location = payload == IntPtr.Zero
                 ? null
                 : ToQueryLocation(ReadStruct<FffSearchResultHeader>(payload).Location);
-            var items = new List<FileItem>((int)Math.Min(count, (uint)maxItems));
+            // A filtered pass reads the whole pool to keep a few: size for what it keeps, not
+            // for what it reads.
+            var items = pathFilter is null
+                ? new List<FileItem>((int)Math.Min(count, (uint)maxItems))
+                : new List<FileItem>();
             for (uint i = 0; i < count && items.Count < maxItems; i++)
             {
                 IntPtr item = Native.fff_search_result_get_item(payload, i);
