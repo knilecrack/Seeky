@@ -230,7 +230,7 @@ same — these failures are all silent or cryptic without instrumentation.
   (`Find Files (fuzzy)> ` / `Live Grep (fuzzy)> ` / `Current File (fuzzy)> ` / `Symbols> ` /
   `Git Modified> ` / `Files & Folders> `) at the bottom,
   results left + preview pane right (~50/50), status line above the prompt. Modes cycle with
-  **Tab** or **Ctrl+G**: files → grep → current file → symbols → git → files & folders. Current
+  **Tab** or **Ctrl+G** (back with **Shift+Tab** / **Ctrl+Shift+G**): files → grep → current file → symbols → git → files & folders. Current
   File behaves like Live Grep scoped to the active document (same rows, Ctrl+R sub-modes and
   Ctrl+D filter). Files & Folders is one fuzzy list over both (`fff_search_mixed`). A Find Files
   or Files & Folders query ending in `:line[:col]` (`SeekyModalWindowManager.cs:1052:9`) opens
