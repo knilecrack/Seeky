@@ -732,14 +732,13 @@
                             : `Live Grep (${grepMode})`;
       }
 
-      function toggleMode() {
-        // files/grep/buffer/symbols/git/mixed. 'path' is command-entered only (the caret
-        // context exists only when the command runs); Tab out of it falls through to 'files'.
-        mode = mode === 'files' ? 'grep'
-          : mode === 'grep' ? 'buffer'
-            : mode === 'buffer' ? 'symbols'
-              : mode === 'symbols' ? 'git'
-                : mode === 'git' ? 'mixed' : 'files';
+      var TAB_MODES = ['files', 'grep', 'buffer', 'symbols', 'git', 'mixed'];
+      function toggleMode(back) {
+        // Tab walks TAB_MODES forward, Shift+Tab back. 'path' and the list modes are
+        // command-entered only (the caret context exists only when the command runs);
+        // Tab out of them falls through to 'files'.
+        var i = TAB_MODES.indexOf(mode);
+        mode = i < 0 ? 'files' : TAB_MODES[(i + (back ? TAB_MODES.length - 1 : 1)) % TAB_MODES.length];
         updatePromptLabel();
         sendSearch();
       }
@@ -1175,6 +1174,7 @@
         ]],
         ['Modes and filters', [
           ['Tab  Ctrl+G', 'next mode: Files, Grep, Current File, Symbols, Git, Files & Folders'],
+          ['Shift+Tab  Ctrl+Shift+G', 'previous mode'],
           ['Ctrl+R', 'match mode. Grep: plain, regex, fuzzy, any. Files: fuzzy, plain, glob'],
           ['Ctrl+D', 'grep: definitions only'],
           ['Ctrl+F', 'grep inside the selected file or folder'],
@@ -1382,7 +1382,7 @@
         var key = e.key;
         if (key === 'Tab' || (key === 'g' && e.ctrlKey)) {
           e.preventDefault();
-          toggleMode();
+          toggleMode(e.shiftKey);
         } else if (key === 'r' && e.ctrlKey) {
           e.preventDefault();
           toggleMatchMode();
