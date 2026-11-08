@@ -268,6 +268,15 @@
       overflow: hidden;
       text-overflow: ellipsis;
       cursor: default;
+      position: relative;
+    }
+    /* VSNeo: Ctrl+Space marks rows for a selective quickfix export. */
+    #results .row.quickfix-marked::after {
+      content: '+';
+      position: absolute;
+      right: 10px;
+      color: var(--accent);
+      font-weight: bold;
     }
     /* Beam persistence: the scanning beam resting on one line. */
     #results .row.selected {
@@ -459,9 +468,9 @@
                     { type: 'pick', mode, name }                VSNeo list modes whose Enter is an
                                                                 nvim action (a mark jump, a register
                                                                 paste, a mapping, a history entry)
-                    { type: 'quickfix', title, items }          VSNeo, Ctrl+Q: the visible rows,
-                                                                best first, as [{ path, line, text }]
-                                                                for nvim's quickfix list
+                    { type: 'quickfix', action, title, items }  VSNeo: marked rows, else visible,
+                                                                best first, as [{ path, line, text }];
+                                                                action: replace | append | new
                     { type: 'close' }
                     { type: 'resizeWindow', step }              +1 grow / -1 shrink / 0 default;
                                                                 the host owns the HWND and the
@@ -569,6 +578,7 @@
       var items = [];
       var rowByIndex = []; // item index -> DOM row (group headers shift positions)
       var selected = -1;
+      var quickfixMarked = new Set(); // VSNeo: marked item indices; empty exports every visible row
       var debounceTimer = null;
       var lastCapped = false;
       var lastDuration = 0;
@@ -823,6 +833,34 @@
         statusEl.textContent = 'grep in ' + item.path + (item.isDirectory ? '/' : '') + ' — type a pattern';
       }
 
+      function toggleQuickfixMark() {
+        var item = items[selected];
+        if (!item || item.isDirectory || !item.path) {
+          return;
+        }
+        if (quickfixMarked.has(selected)) {
+          quickfixMarked.delete(selected);
+        } else {
+          quickfixMarked.add(selected);
+        }
+        var row = rowByIndex[selected];
+        if (row) {
+          row.classList.toggle('quickfix-marked', quickfixMarked.has(selected));
+        }
+        updateResultStatus();
+        stepSelection(1); // next result in export order (best first)
+      }
+
+      function markedVisibleCount() {
+        var count = 0;
+        quickfixMarked.forEach(function (index) {
+          if (isVisible(index)) {
+            count++;
+          }
+        });
+        return count;
+      }
+
       // Indices into items[] visible under the current defsOnly filter.
       function visibleIndices() {
         var out = [];
@@ -869,10 +907,12 @@
 
       function updateResultStatus() {
         var count = visibleIndices().length;
+        var marked = markedVisibleCount();
         statusEl.textContent = count + ' results' +
           (lastCapped ? ' (capped)' : '') +
           (defsOnly && isGrepLike() ? ' (defs only)' : '') +
           (mode === 'files' && queryEl.value === '' ? ' (recent files)' : '') +
+          (marked > 0 ? ' — ' + marked + ' marked' : '') +
           ' — ' + lastDuration + 'ms';
       }
 
@@ -951,7 +991,8 @@
             resultsEl.appendChild(header);
           }
           var row = document.createElement('div');
-          row.className = 'row' + (isGrepLike() ? ' match' : '') + (index === selected ? ' selected' : '');
+          row.className = 'row' + (isGrepLike() ? ' match' : '') + (index === selected ? ' selected' : '') +
+            (quickfixMarked.has(index) ? ' quickfix-marked' : '');
           row.setAttribute('data-index', String(index));
           var badge = gitBadge(item.gitStatus);
           // Symbols rows lead with the fixed-width [kind] column, so a leading git badge would
@@ -1140,21 +1181,25 @@
         }
       }
 
-      // Ctrl+Q (VSNeo): the visible rows, best first, into nvim's quickfix list. The host
-      // fills in columns (it knows where each row lands) and closes the picker.
-      function sendQuickfix() {
+      // VSNeo: marked rows when any exist, otherwise every visible row, best first. The host
+      // fills in columns and applies replace / append / new-list semantics.
+      function sendQuickfix(action) {
         var rows = [];
+        var markedOnly = quickfixMarked.size > 0;
         visibleIndices().forEach(function (i) {
+          if (markedOnly && !quickfixMarked.has(i)) {
+            return;
+          }
           var item = items[i];
           if (!item.isDirectory && item.path) {
             rows.push({ path: item.path, line: item.line || 1, text: item.text || item.name || item.path });
           }
         });
         if (rows.length === 0) {
-          statusEl.textContent = 'nothing to send to quickfix';
+          statusEl.textContent = markedOnly ? 'no marked rows under the current filter' : 'nothing to send to quickfix';
           return;
         }
-        send({ type: 'quickfix', title: modeLabelEl.textContent + ' > ' + queryEl.value, items: rows });
+        send({ type: 'quickfix', action: action || 'replace', title: modeLabelEl.textContent + ' > ' + queryEl.value, items: rows });
       }
 
       // ---------------------------------------------------------------- key help (F1, Ctrl+/)
@@ -1169,7 +1214,10 @@
           ['Enter', 'open the selected result'],
           ['Ctrl+V', 'open it in a new vertical tab group (:vsp)', 'vsneo'],
           ['Ctrl+X', 'open it in a split (:sp)', 'vsneo'],
-          ['Ctrl+Q', 'send the results to the quickfix list and jump to the first; then :cnext / :cprev (or ]q / [q)', 'vsneo'],
+          ['Ctrl+Space', 'mark the selected row for quickfix export; marked rows win over all results', 'vsneo'],
+          ['Ctrl+Q', 'replace quickfix with marked rows (or all results) and jump to the first; then :cnext / :cprev', 'vsneo'],
+          ['Ctrl+Shift+Q', 'same export into a new quickfix list; :colder / :cnewer walks list history', 'vsneo'],
+          ['Alt+Q', 'append the export to the current quickfix list without moving the editor', 'vsneo'],
           ['↑ on an empty prompt', 'past queries'],
           ['Esc', 'close the picker'],
         ]],
@@ -1430,9 +1478,18 @@
         } else if (key === 'x' && e.ctrlKey && vsneo) {
           e.preventDefault();
           openSelected('horizontal');
+        } else if ((key === ' ' || e.code === 'Space') && e.ctrlKey && vsneo) {
+          e.preventDefault();
+          toggleQuickfixMark();
+        } else if (key === 'q' && e.altKey && vsneo) {
+          e.preventDefault();
+          sendQuickfix('append');
+        } else if (key === 'q' && e.ctrlKey && e.shiftKey && vsneo) {
+          e.preventDefault();
+          sendQuickfix('new');
         } else if (key === 'q' && e.ctrlKey && vsneo) {
           e.preventDefault();
-          sendQuickfix();
+          sendQuickfix('replace');
         } else if (key === 'ArrowDown' || (key === 'j' && e.ctrlKey) || (key === 'n' && e.ctrlKey)) {
           e.preventDefault();
           if (historyIndex >= 0) {
@@ -1532,6 +1589,7 @@
           }
           if (message.type === 'results') {
             items = message.items || [];
+            quickfixMarked.clear(); // indices belong to this result set only
             lastCapped = !!message.capped;
             lastDuration = message.duration || 0;
             // The host can preselect a row (document outline: the symbol enclosing the caret).
@@ -1564,6 +1622,7 @@
             showHelp(false);
             queryEl.value = '';
             items = [];
+            quickfixMarked.clear();
             defsOnly = false;
             historyIndex = -1;
             selected = -1;
