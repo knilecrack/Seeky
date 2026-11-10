@@ -27,7 +27,7 @@ using System.Threading.Tasks;
 /// introduces — TypeScript class members, C++ methods defined without modifiers — are not swept.
 /// </para>
 /// </remarks>
-internal static class SymbolIndex
+internal static partial class SymbolIndex
 {
     /// <summary>
     /// How long a built index is served before a refresh is triggered. Past this the cached
@@ -56,13 +56,6 @@ internal static class SymbolIndex
     private static IReadOnlyList<Entry> cached = [];
     private static string? cachedWorkspace;
     private static long cachedAtTicks;
-
-    /// <summary>A declared symbol: where it is, what it is, and the source line it came from.</summary>
-    internal readonly record struct Entry(
-        string Path, int Line, int Col, string Text, string Kind, string Name, string? GitStatus, bool IsBinary);
-
-    /// <summary>A symbol that matched a query, with the match spans into <see cref="Entry.Name"/>.</summary>
-    internal readonly record struct Hit(Entry Entry, int Score, SeekyRange[] NameRanges);
 
     /// <summary>Drops the cached index — call when the workspace root changes.</summary>
     internal static void Invalidate()
@@ -156,88 +149,10 @@ internal static class SymbolIndex
     }
 
     /// <summary>
-    /// Ranks <paramref name="entries"/> against <paramref name="query"/> by fuzzy name match. An
-    /// empty query lists the workspace's symbols in index order.
-    /// </summary>
-    internal static List<Hit> Query(IReadOnlyList<Entry> entries, string query, int maxResults)
-    {
-        var hits = new List<Hit>(Math.Min(maxResults, entries.Count));
-        if (query.Length == 0)
-        {
-            for (int i = 0; i < entries.Count && hits.Count < maxResults; i++)
-            {
-                hits.Add(new Hit(entries[i], 0, []));
-            }
-
-            return hits;
-        }
-
-        var scored = new List<Hit>();
-        foreach (Entry entry in entries)
-        {
-            if (FuzzyMatcher.TryMatch(query, entry.Name, out int score, out (int Start, int End)[] ranges))
-            {
-                var named = new SeekyRange[ranges.Length];
-                for (int i = 0; i < ranges.Length; i++)
-                {
-                    named[i] = new SeekyRange(ranges[i].Start, ranges[i].End);
-                }
-
-                scored.Add(new Hit(entry, score, named));
-            }
-        }
-
-        scored.Sort(static (a, b) =>
-        {
-            int byScore = b.Score.CompareTo(a.Score);
-            if (byScore != 0)
-            {
-                return byScore;
-            }
-
-            // Equal-scoring names are usually the same identifier declared in several places —
-            // the type declaration is nearly always the one being looked for.
-            int byKind = KindRank(a.Entry.Kind).CompareTo(KindRank(b.Entry.Kind));
-            if (byKind != 0)
-            {
-                return byKind;
-            }
-
-            int byLength = a.Entry.Name.Length.CompareTo(b.Entry.Name.Length);
-            if (byLength != 0)
-            {
-                return byLength;
-            }
-
-            int byPath = string.CompareOrdinal(a.Entry.Path, b.Entry.Path);
-            return byPath != 0 ? byPath : a.Entry.Line.CompareTo(b.Entry.Line);
-        });
-
-        for (int i = 0; i < scored.Count && i < maxResults; i++)
-        {
-            hits.Add(scored[i]);
-        }
-
-        return hits;
-    }
-
-    /// <summary>
     /// Returns the cached symbols for <paramref name="workspaceDir"/>, if any, and whether they
     /// are past <see cref="FreshnessWindow"/>. A stale hit is still a hit — the caller serves it
     /// and refreshes behind it.
     /// </summary>
-    /// <summary>
-    /// Tie-break order for equally-scoring symbols: types, then members, then fields, then the
-    /// per-file <c>namespace</c> lines (numerous and rarely what a symbol search is after).
-    /// </summary>
-    private static int KindRank(string kind) => kind switch
-    {
-        "class" or "interface" or "struct" or "record" or "enum" or "delegate" or "impl" or "type" => 0,
-        "method" or "property" => 1,
-        "namespace" => 3,
-        _ => 2,
-    };
-
     private static bool TryGetCached(string workspaceDir, out IReadOnlyList<Entry> entries, out bool stale)
     {
         entries = [];
