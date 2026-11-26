@@ -194,13 +194,13 @@ internal sealed record SeekyState
     /// <summary>Applies a page-reported state, rejecting anything out of range.</summary>
     internal SeekyState With(
         int? fontSize, string? grepMode, bool? defsOnly, string? theme = null, string? fileMode = null) => this with
-    {
-        FontSize = fontSize is null ? FontSize : ClampFontSize(fontSize.Value),
-        GrepMode = NormalizeGrepMode(grepMode) ?? GrepMode,
-        FileMode = NormalizeFileMode(fileMode) ?? FileMode,
-        DefsOnly = defsOnly ?? DefsOnly,
-        Theme = NormalizeTheme(theme) ?? Theme,
-    };
+        {
+            FontSize = fontSize is null ? FontSize : ClampFontSize(fontSize.Value),
+            GrepMode = NormalizeGrepMode(grepMode) ?? GrepMode,
+            FileMode = NormalizeFileMode(fileMode) ?? FileMode,
+            DefsOnly = defsOnly ?? DefsOnly,
+            Theme = NormalizeTheme(theme) ?? Theme,
+        };
 
     /// <summary>
     /// Records a popup size, or clears it when either dimension is below
